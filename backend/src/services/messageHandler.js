@@ -178,12 +178,23 @@ async function sendToWebhook(session, message, mediaUrl = null) {
         });
 
         logger.info(`Webhook sent for message ${message.id} to ${session.webhookUrl}, status: ${response.status}`);
-        
+
         // Update message as webhook sent
         await prisma.message.update({
           where: { id: message.id },
           data: { webhookSent: true }
         });
+
+        // If webhook returns a reply, send it back to the original sender
+        if (response.data && response.data.reply_message) {
+          const to = response.data.reply_to || message.fromNumber;
+          try {
+            await sendMessage(session.id, to, response.data.reply_message);
+            logger.info(`Auto-reply sent for message ${message.id} to ${to}`);
+          } catch (replyError) {
+            logger.error(`Error sending auto-reply for message ${message.id}:`, replyError);
+          }
+        }
       } catch (error) {
         logger.error(`Error sending webhook for message ${message.id} to ${session.webhookUrl}:`, error);
       }
