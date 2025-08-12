@@ -173,11 +173,13 @@ async function initializeSession(sessionId) {
         const chat = await msg.getChat();
         if (!chat.isGroup) return;
         
-        // Get the client info to check for mentions
-        const info = await client.getWid();
+        // Get the client ID to check for mentions
+        const wid = client.info && client.info.wid ? client.info.wid._serialized : null;
+        if (!wid) return;
+
         const mentionedIds = msg.mentionedIds || [];
-        
-        if (mentionedIds.includes(info._serialized)) {
+
+        if (mentionedIds.includes(wid)) {
           await processIncomingMessage(sessionId, msg, true);
         }
       } catch (error) {
