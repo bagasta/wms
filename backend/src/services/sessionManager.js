@@ -155,33 +155,19 @@ async function initializeSession(sessionId) {
       sessions.delete(sessionId);
     });
 
-    // Handle incoming messages
+    // Handle incoming messages and detect mentions in groups
     client.on('message', async (msg) => {
       try {
-        await processIncomingMessage(sessionId, msg);
+        let isMention = false;
+
+        if (msg.from.endsWith('@g.us')) {
+          const mentions = await msg.getMentions();
+          isMention = mentions.some((contact) => contact.isMe);
+        }
+
+        await processIncomingMessage(sessionId, msg, isMention);
       } catch (error) {
         logger.error(`Error processing message for session ${sessionId}:`, error);
-      }
-    });
-
-    // Handle group messages with mentions
-    client.on('message_create', async (msg) => {
-      try {
-        // Check if it's a group message and if the bot is mentioned
-        if (msg.fromMe || !msg.from.endsWith('@g.us')) return;
-        
-        const chat = await msg.getChat();
-        if (!chat.isGroup) return;
-        
-        // Get the client info to check for mentions
-        const info = await client.getWid();
-        const mentionedIds = msg.mentionedIds || [];
-        
-        if (mentionedIds.includes(info._serialized)) {
-          await processIncomingMessage(sessionId, msg, true);
-        }
-      } catch (error) {
-        logger.error(`Error processing group message for session ${sessionId}:`, error);
       }
     });
 

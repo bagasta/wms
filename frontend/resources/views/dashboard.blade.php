@@ -227,30 +227,43 @@
             document.getElementById('editModal').classList.remove('flex');
         }
 
+        let qrInterval;
+
         function showQrModal(sessionId) {
             document.getElementById('qrModal').classList.remove('hidden');
             document.getElementById('qrModal').classList.add('flex');
-            
-            // Fetch QR code
-            fetch(`/sessions/${sessionId}/qr`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.qr_code) {
-                        document.getElementById('qrCodeContainer').innerHTML = 
-                            `<img src="${data.qr_code}" alt="QR Code" class="w-64 h-64 mx-auto">`;
-                    } else {
-                        document.getElementById('qrCodeContainer').innerHTML = 
-                            '<div class="w-64 h-64 bg-gray-700 border border-gray-600 rounded mx-auto flex items-center justify-center"><span class="text-gray-400">QR Code not available</span></div>';
-                    }
-                })
-                .catch(error => {
-                    console.error('Error fetching QR code:', error);
-                    document.getElementById('qrCodeContainer').innerHTML = 
-                        '<div class="w-64 h-64 bg-gray-700 border border-gray-600 rounded mx-auto flex items-center justify-center"><span class="text-red-400">Error loading QR Code</span></div>';
-                });
+
+            const fetchQr = () => {
+                fetch(`/sessions/${sessionId}/qr`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.qr_code) {
+                            document.getElementById('qrCodeContainer').innerHTML =
+                                `<img src="${data.qr_code}" alt="QR Code" class="w-64 h-64 mx-auto">`;
+                        } else {
+                            document.getElementById('qrCodeContainer').innerHTML =
+                                '<div class="w-64 h-64 bg-gray-700 border border-gray-600 rounded mx-auto flex items-center justify-center"><span class="text-gray-400">QR Code not available</span></div>';
+                        }
+
+                        if (data.status && data.status !== 'connecting') {
+                            clearInterval(qrInterval);
+                            closeQrModal();
+                            location.reload();
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error fetching QR code:', error);
+                        document.getElementById('qrCodeContainer').innerHTML =
+                            '<div class="w-64 h-64 bg-gray-700 border border-gray-600 rounded mx-auto flex items-center justify-center"><span class="text-red-400">Error loading QR Code</span></div>';
+                    });
+            };
+
+            fetchQr();
+            qrInterval = setInterval(fetchQr, 5000);
         }
 
         function closeQrModal() {
+            clearInterval(qrInterval);
             document.getElementById('qrModal').classList.add('hidden');
             document.getElementById('qrModal').classList.remove('flex');
         }

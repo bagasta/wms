@@ -142,6 +142,42 @@ async function processMessageMedia(msg, sessionId, messageId) {
   }
 }
 
+function extractReplies(data) {
+  let parsed = data;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      parsed = [{ message: parsed }];
+    }
+  }
+
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+
+  return items
+    .map((item) => {
+      const raw = typeof item === 'string'
+        ? item
+        : item.reply_message || item.output || item.message;
+
+      if (!raw) return null;
+
+      const srcdocMatch =
+        typeof raw === 'string' && raw.match(/srcdoc=["']([^"']+)["']/i);
+      let content = srcdocMatch ? srcdocMatch[1] : raw;
+      if (typeof content === 'string') {
+        content = content.replace(/<[^>]*>/g, '').trim();
+      }
+
+      if (!content) return null;
+      return {
+        content,
+        to: typeof item === 'object' ? item.reply_to : undefined
+      };
+    })
+    .filter(Boolean);
+}
+
 /**
  * Send message to webhook
  * @param {object} session - The session object
@@ -178,12 +214,31 @@ async function sendToWebhook(session, message, mediaUrl = null) {
         });
 
         logger.info(`Webhook sent for message ${message.id} to ${session.webhookUrl}, status: ${response.status}`);
-        
+
         // Update message as webhook sent
         await prisma.message.update({
           where: { id: message.id },
           data: { webhookSent: true }
         });
+
+        // If webhook returns replies, send them back to the original sender
+        if (response.data) {
+          const replies = extractReplies(response.data);
+          for (const reply of replies) {
+            const to = reply.to || message.fromNumber;
+            try {
+              await sendMessage(session.id, to, reply.content);
+              logger.info(
+                `Auto-reply sent for message ${message.id} to ${to}`
+              );
+            } catch (replyError) {
+              logger.error(
+                `Error sending auto-reply for message ${message.id}:`,
+                replyError
+              );
+            }
+          }
+        }
       } catch (error) {
         logger.error(`Error sending webhook for message ${message.id} to ${session.webhookUrl}:`, error);
       }
@@ -201,7 +256,27 @@ async function sendToWebhook(session, message, mediaUrl = null) {
             }
           });
 
-          logger.info(`Webhook sent for message ${message.id} to ${webhook.url}, status: ${response.status}`);
+          logger.info(
+            `Webhook sent for message ${message.id} to ${webhook.url}, status: ${response.status}`
+          );
+
+          if (response.data) {
+            const replies = extractReplies(response.data);
+            for (const reply of replies) {
+              const to = reply.to || message.fromNumber;
+              try {
+                await sendMessage(session.id, to, reply.content);
+                logger.info(
+                  `Auto-reply sent for message ${message.id} to ${to}`
+                );
+              } catch (replyError) {
+                logger.error(
+                  `Error sending auto-reply for message ${message.id}:`,
+                  replyError
+                );
+              }
+            }
+          }
         } catch (error) {
           logger.error(`Error sending webhook for message ${message.id} to ${webhook.url}:`, error);
         }
