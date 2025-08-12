@@ -156,13 +156,24 @@ function extractReplies(data) {
 
   return items
     .map((item) => {
-      if (typeof item === 'string') {
-        return { content: item };
+      const raw = typeof item === 'string'
+        ? item
+        : item.reply_message || item.output || item.message;
+
+      if (!raw) return null;
+
+      const srcdocMatch =
+        typeof raw === 'string' && raw.match(/srcdoc=["']([^"']+)["']/i);
+      let content = srcdocMatch ? srcdocMatch[1] : raw;
+      if (typeof content === 'string') {
+        content = content.replace(/<[^>]*>/g, '').trim();
       }
-      const content =
-        item.reply_message || item.output || item.message;
+
       if (!content) return null;
-      return { content, to: item.reply_to };
+      return {
+        content,
+        to: typeof item === 'object' ? item.reply_to : undefined
+      };
     })
     .filter(Boolean);
 }
