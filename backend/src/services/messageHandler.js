@@ -142,6 +142,31 @@ async function processMessageMedia(msg, sessionId, messageId) {
   }
 }
 
+function extractReplies(data) {
+  let parsed = data;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      parsed = [{ message: parsed }];
+    }
+  }
+
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+
+  return items
+    .map((item) => {
+      if (typeof item === 'string') {
+        return { content: item };
+      }
+      const content =
+        item.reply_message || item.output || item.message;
+      if (!content) return null;
+      return { content, to: item.reply_to };
+    })
+    .filter(Boolean);
+}
+
 /**
  * Send message to webhook
  * @param {object} session - The session object
@@ -187,18 +212,11 @@ async function sendToWebhook(session, message, mediaUrl = null) {
 
         // If webhook returns replies, send them back to the original sender
         if (response.data) {
-          const replies = Array.isArray(response.data)
-            ? response.data
-            : [response.data];
-
+          const replies = extractReplies(response.data);
           for (const reply of replies) {
-            const content =
-              reply.reply_message || reply.output || reply.message;
-            if (!content) continue;
-
-            const to = reply.reply_to || message.fromNumber;
+            const to = reply.to || message.fromNumber;
             try {
-              await sendMessage(session.id, to, content);
+              await sendMessage(session.id, to, reply.content);
               logger.info(
                 `Auto-reply sent for message ${message.id} to ${to}`
               );
@@ -232,18 +250,11 @@ async function sendToWebhook(session, message, mediaUrl = null) {
           );
 
           if (response.data) {
-            const replies = Array.isArray(response.data)
-              ? response.data
-              : [response.data];
-
+            const replies = extractReplies(response.data);
             for (const reply of replies) {
-              const content =
-                reply.reply_message || reply.output || reply.message;
-              if (!content) continue;
-
-              const to = reply.reply_to || message.fromNumber;
+              const to = reply.to || message.fromNumber;
               try {
-                await sendMessage(session.id, to, content);
+                await sendMessage(session.id, to, reply.content);
                 logger.info(
                   `Auto-reply sent for message ${message.id} to ${to}`
                 );
