@@ -185,14 +185,29 @@ async function sendToWebhook(session, message, mediaUrl = null) {
           data: { webhookSent: true }
         });
 
-        // If webhook returns a reply, send it back to the original sender
-        if (response.data && response.data.reply_message) {
-          const to = response.data.reply_to || message.fromNumber;
-          try {
-            await sendMessage(session.id, to, response.data.reply_message);
-            logger.info(`Auto-reply sent for message ${message.id} to ${to}`);
-          } catch (replyError) {
-            logger.error(`Error sending auto-reply for message ${message.id}:`, replyError);
+        // If webhook returns replies, send them back to the original sender
+        if (response.data) {
+          const replies = Array.isArray(response.data)
+            ? response.data
+            : [response.data];
+
+          for (const reply of replies) {
+            const content =
+              reply.reply_message || reply.output || reply.message;
+            if (!content) continue;
+
+            const to = reply.reply_to || message.fromNumber;
+            try {
+              await sendMessage(session.id, to, content);
+              logger.info(
+                `Auto-reply sent for message ${message.id} to ${to}`
+              );
+            } catch (replyError) {
+              logger.error(
+                `Error sending auto-reply for message ${message.id}:`,
+                replyError
+              );
+            }
           }
         }
       } catch (error) {
@@ -212,7 +227,34 @@ async function sendToWebhook(session, message, mediaUrl = null) {
             }
           });
 
-          logger.info(`Webhook sent for message ${message.id} to ${webhook.url}, status: ${response.status}`);
+          logger.info(
+            `Webhook sent for message ${message.id} to ${webhook.url}, status: ${response.status}`
+          );
+
+          if (response.data) {
+            const replies = Array.isArray(response.data)
+              ? response.data
+              : [response.data];
+
+            for (const reply of replies) {
+              const content =
+                reply.reply_message || reply.output || reply.message;
+              if (!content) continue;
+
+              const to = reply.reply_to || message.fromNumber;
+              try {
+                await sendMessage(session.id, to, content);
+                logger.info(
+                  `Auto-reply sent for message ${message.id} to ${to}`
+                );
+              } catch (replyError) {
+                logger.error(
+                  `Error sending auto-reply for message ${message.id}:`,
+                  replyError
+                );
+              }
+            }
+          }
         } catch (error) {
           logger.error(`Error sending webhook for message ${message.id} to ${webhook.url}:`, error);
         }
