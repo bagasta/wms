@@ -1,3 +1,0 @@
-{"level":"info","message":"Server running on port 3000","service":"whatsapp-api","timestamp":"2025-08-11 21:26:57"}
-{"level":"info","message":"Found 0 active sessions to initialize","service":"whatsapp-api","timestamp":"2025-08-11 21:26:57"}
-{"level":"info","message":"WhatsApp session manager initialized","service":"whatsapp-api","timestamp":"2025-08-11 21:26:57"}

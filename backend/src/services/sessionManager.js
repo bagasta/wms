@@ -9,6 +9,93 @@ const { processIncomingMessage } = require('./messageHandler');
 
 const prisma = new PrismaClient();
 const sessions = new Map();
+const typingStatus = new Map(); // sessionId -> Map(chatId -> { isTyping, updatedAt })
+
+function getSessionTypingMap(sessionId) {
+  if (!typingStatus.has(sessionId)) {
+    typingStatus.set(sessionId, new Map());
+  }
+  return typingStatus.get(sessionId);
+}
+
+function setTypingStatus(sessionId, chatId, isTyping) {
+  const map = getSessionTypingMap(sessionId);
+  if (!chatId) {
+    return;
+  }
+
+  if (isTyping) {
+    map.set(chatId, {
+      isTyping: true,
+      updatedAt: Date.now()
+    });
+  } else {
+    map.set(chatId, {
+      isTyping: false,
+      updatedAt: Date.now()
+    });
+  }
+}
+
+function isChatTyping(sessionId, chatId) {
+  const map = typingStatus.get(sessionId);
+  if (!map) {
+    return false;
+  }
+
+  const record = map.get(chatId);
+  if (!record) {
+    return false;
+  }
+
+  const age = Date.now() - record.updatedAt;
+
+  if (age > 15000 && record.isTyping) {
+    // Expire stale typing status after 15 seconds
+    map.set(chatId, {
+      isTyping: false,
+      updatedAt: Date.now()
+    });
+    return false;
+  }
+
+  return Boolean(record.isTyping);
+}
+
+async function updateSessionRecord(sessionId, data) {
+  try {
+    const result = await prisma.session.updateMany({
+      where: { id: sessionId },
+      data
+    });
+
+    if (result.count === 0) {
+      logger.error(`Session ${sessionId} not found when updating record`);
+      return false;
+    }
+
+    const entry = sessions.get(sessionId);
+    if (entry) {
+      const info = { ...entry.info };
+
+      if (Object.prototype.hasOwnProperty.call(data, 'status')) {
+        info.status = data.status;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(data, 'lastSeen')) {
+        info.lastSeen = data.lastSeen;
+      }
+
+      entry.info = info;
+      sessions.set(sessionId, entry);
+    }
+
+    return true;
+  } catch (error) {
+    logger.error(`Failed to update session ${sessionId}:`, error);
+    return false;
+  }
+}
 
 /**
  * Initialize the WhatsApp session manager
@@ -83,23 +170,26 @@ async function initializeSession(sessionId) {
 
     // Set up event handlers
     client.on('qr', async (qr) => {
-      // Generate QR code for terminal (for debugging)
-      qrcode.generate(qr, { small: true });
+      // Generate QR code for terminal (for debugging) and log it via Winston
+      qrcode.generate(qr, { small: true }, (asciiQR) => {
+        logger.info(`QR code for session ${sessionId}:\n${asciiQR}`);
+      });
+      logger.debug(`QR string for session ${sessionId}: ${qr}`);
 
       try {
         // Convert QR string to data URL for dashboard display
         const qrDataUrl = await QRCode.toDataURL(qr);
 
-        // Save QR code to database
-        await prisma.session.update({
-          where: { id: sessionId },
-          data: {
-            qrCode: qrDataUrl,
-            status: 'connecting'
-          }
+        const updated = await updateSessionRecord(sessionId, {
+          qrCode: qrDataUrl,
+          status: 'connecting'
         });
 
-        logger.info(`QR code generated for session ${sessionId}`);
+        if (!updated) {
+          logger.error(`Session ${sessionId} not found when saving QR code`);
+        } else {
+          logger.info(`QR code generated for session ${sessionId}`);
+        }
       } catch (error) {
         logger.error(`Failed to generate QR code for session ${sessionId}:`, error);
       }
@@ -107,81 +197,125 @@ async function initializeSession(sessionId) {
 
     client.on('ready', async () => {
       logger.info(`Session ${sessionId} is ready`);
-      
-      // Update session status in database
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: {
+      await updateSessionRecord(sessionId, {
+        status: 'connected',
+        qrCode: null,
+        lastSeen: new Date()
+      });
+
+      const existing = sessions.get(sessionId);
+      if (existing) {
+        existing.info.status = 'connected';
+        existing.info.lastSeen = new Date();
+      }
+    });
+
+    client.on('authenticated', async () => {
+      logger.info(`Session ${sessionId} authenticated`);
+
+      await updateSessionRecord(sessionId, {
+        status: 'connected',
+        qrCode: null,
+        lastSeen: new Date()
+      });
+
+      const existing = sessions.get(sessionId);
+      if (existing) {
+        existing.info.status = 'connected';
+        existing.info.lastSeen = new Date();
+      }
+    });
+
+    client.on('change_state', async (state) => {
+      logger.info(`Session ${sessionId} state changed to ${state}`);
+
+      if (state === 'CONNECTED') {
+        await updateSessionRecord(sessionId, {
           status: 'connected',
           qrCode: null,
           lastSeen: new Date()
-        }
-      });
-    });
+        });
 
-    client.on('authenticated', () => {
-      logger.info(`Session ${sessionId} authenticated`);
+        const existing = sessions.get(sessionId);
+        if (existing) {
+          existing.info.status = 'connected';
+          existing.info.lastSeen = new Date();
+        }
+      }
     });
 
     client.on('auth_failure', async (msg) => {
       logger.error(`Session ${sessionId} authentication failed: ${msg}`);
       
-      // Update session status in database
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: {
-          status: 'disconnected',
-          qrCode: null
-        }
+      await updateSessionRecord(sessionId, {
+        status: 'disconnected',
+        qrCode: null
       });
       
       // Remove session from map
       sessions.delete(sessionId);
+      typingStatus.delete(sessionId);
     });
 
     client.on('disconnected', async (reason) => {
       logger.info(`Session ${sessionId} disconnected: ${reason}`);
       
-      // Update session status in database
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: {
-          status: 'disconnected',
-          qrCode: null
-        }
+      await updateSessionRecord(sessionId, {
+        status: 'disconnected',
+        qrCode: null
       });
       
       // Remove session from map
       sessions.delete(sessionId);
+      typingStatus.delete(sessionId);
     });
 
-    // Handle incoming messages
+    // Handle incoming messages and detect mentions in groups
     client.on('message', async (msg) => {
       try {
-        await processIncomingMessage(sessionId, msg);
+        if (msg.from === 'status@broadcast' || msg.to === 'status@broadcast') {
+          logger.debug(`Skipping status message for session ${sessionId}`);
+          return;
+        }
+
+        let isMention = false;
+
+        if (msg.from.endsWith('@g.us')) {
+          const mentions = await msg.getMentions();
+          isMention = mentions.some((contact) => contact.isMe);
+        }
+
+        await processIncomingMessage(sessionId, msg, isMention);
       } catch (error) {
         logger.error(`Error processing message for session ${sessionId}:`, error);
       }
     });
 
-    // Handle group messages with mentions
     client.on('message_create', async (msg) => {
       try {
-        // Check if it's a group message and if the bot is mentioned
-        if (msg.fromMe || !msg.from.endsWith('@g.us')) return;
-        
-        const chat = await msg.getChat();
-        if (!chat.isGroup) return;
-        
-        // Get the client info to check for mentions
-        const info = await client.getWid();
-        const mentionedIds = msg.mentionedIds || [];
-        
-        if (mentionedIds.includes(info._serialized)) {
-          await processIncomingMessage(sessionId, msg, true);
+        if (!msg.fromMe) {
+          return;
         }
+
+        await processIncomingMessage(sessionId, msg, false);
       } catch (error) {
-        logger.error(`Error processing group message for session ${sessionId}:`, error);
+        logger.error(`Error processing outbound message for session ${sessionId}:`, error);
+      }
+    });
+
+    client.on('typing', (chat) => {
+      try {
+        setTypingStatus(sessionId, chat?.id?._serialized, true);
+      } catch (error) {
+        logger.warn(`Failed to record typing state for session ${sessionId}:`, error);
+      }
+    });
+
+    client.on('stop_typing', (chat) => {
+      try {
+        setTypingStatus(sessionId, chat?.id?._serialized, false);
+      } catch (error) {
+        logger.warn(`Failed to clear typing state for session ${sessionId}:`, error);
       }
     });
 
@@ -202,13 +336,9 @@ async function initializeSession(sessionId) {
   } catch (error) {
     logger.error(`Error initializing session ${sessionId}:`, error);
     
-    // Update session status in database
-    await prisma.session.update({
-      where: { id: sessionId },
-      data: {
-        status: 'disconnected',
-        qrCode: null
-      }
+    await updateSessionRecord(sessionId, {
+      status: 'disconnected',
+      qrCode: null
     });
     
     throw error;
@@ -250,6 +380,7 @@ async function closeSession(sessionId) {
     
     // Remove session from map
     sessions.delete(sessionId);
+    typingStatus.delete(sessionId);
     
     // Update session status in database
     await prisma.session.update({
@@ -267,6 +398,7 @@ async function closeSession(sessionId) {
     
     // Force remove session from map
     sessions.delete(sessionId);
+    typingStatus.delete(sessionId);
     
     // Update session status in database
     await prisma.session.update({
@@ -281,11 +413,180 @@ async function closeSession(sessionId) {
   }
 }
 
+function normalizeChatName(chat) {
+  if (!chat) {
+    return 'Unknown chat';
+  }
+
+  if (chat.name) {
+    return chat.name;
+  }
+
+  if (chat.formattedTitle) {
+    return chat.formattedTitle;
+  }
+
+  if (chat.isGroup && chat.id && chat.id.user) {
+    return chat.id.user;
+  }
+
+  if (chat.contact && chat.contact.pushname) {
+    return chat.contact.pushname;
+  }
+
+  if (chat.id && chat.id.user) {
+    return chat.id.user;
+  }
+
+  return chat.id?._serialized || 'Unknown chat';
+}
+
+function extractLastMessageSummary(chat) {
+  const lastMessage = chat?.lastMessage;
+
+  if (!lastMessage) {
+    return {
+      preview: null,
+      timestamp: null,
+      fromMe: null
+    };
+  }
+
+  return {
+    preview: typeof lastMessage.body === 'string' ? lastMessage.body : null,
+    timestamp:
+      typeof lastMessage.timestamp === 'number'
+        ? new Date(lastMessage.timestamp * 1000)
+        : null,
+    fromMe: Boolean(lastMessage.fromMe)
+  };
+}
+
+/**
+ * Get the available chats for a session (groups and direct chats)
+ * @param {number} sessionId - The session ID
+ * @returns {Promise<object[]>}
+ */
+async function getSessionChats(sessionId) {
+  const runtimeSession = sessions.get(sessionId);
+
+  if (!runtimeSession) {
+    throw new Error(`Session ${sessionId} is not connected`);
+  }
+
+  const chats = await runtimeSession.client.getChats();
+
+  return chats
+    .map((chat) => {
+      const lastMessageSummary = extractLastMessageSummary(chat);
+      const chatId = chat.id?._serialized;
+
+      return {
+        id: chatId,
+        name: normalizeChatName(chat),
+        isGroup: Boolean(chat.isGroup),
+        unreadCount: Number.isFinite(chat.unreadCount) ? chat.unreadCount : 0,
+        isMuted: Boolean(chat.isMuted),
+        isArchived: Boolean(chat.archive),
+        isTyping: isChatTyping(sessionId, chatId),
+        lastMessagePreview: lastMessageSummary.preview,
+        lastMessageTimestamp: lastMessageSummary.timestamp,
+        lastMessageFromMe: lastMessageSummary.fromMe
+      };
+    })
+    .sort((a, b) => {
+      const aTime = a.lastMessageTimestamp ? a.lastMessageTimestamp.getTime() : 0;
+      const bTime = b.lastMessageTimestamp ? b.lastMessageTimestamp.getTime() : 0;
+      return bTime - aTime;
+    });
+}
+
+/**
+ * Get all WhatsApp groups for a session
+ * @param {number} sessionId - The session ID
+ * @returns {Promise<object[]>}
+ */
+async function getSessionGroups(sessionId) {
+  const runtimeSession = sessions.get(sessionId);
+
+  if (!runtimeSession) {
+    throw new Error(`Session ${sessionId} is not connected`);
+  }
+
+  const chats = await runtimeSession.client.getChats();
+
+  return chats
+    .filter((chat) => chat.isGroup)
+    .map((chat) => ({
+      id: chat.id._serialized,
+      name: normalizeChatName(chat),
+      participants: Array.isArray(chat.participants) ? chat.participants.length : 0
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Get members for a specific WhatsApp group
+ * @param {number} sessionId - The session ID
+ * @param {string} groupId - The group chat ID
+ * @returns {Promise<object[]>}
+ */
+async function getGroupParticipants(sessionId, groupId) {
+  const runtimeSession = sessions.get(sessionId);
+
+  if (!runtimeSession) {
+    throw new Error(`Session ${sessionId} is not connected`);
+  }
+
+  const normalizedGroupId = groupId.endsWith('@g.us') ? groupId : `${groupId}@g.us`;
+  const chat = await runtimeSession.client.getChatById(normalizedGroupId);
+
+  if (!chat || !chat.isGroup) {
+    throw new Error(`Group ${groupId} not found for session ${sessionId}`);
+  }
+
+  if (!Array.isArray(chat.participants) || chat.participants.length === 0) {
+    logger.warn(`Group ${normalizedGroupId} has no participant metadata loaded`);
+  }
+
+  const participants = await Promise.all(
+    (chat.participants || []).map(async (participant) => {
+      try {
+        const contact = await runtimeSession.client.getContactById(participant.id._serialized);
+        return {
+          id: participant.id._serialized,
+          number: contact?.number || participant.id.user,
+          name: contact?.name || contact?.pushname || contact?.shortName || participant.id.user,
+          isAdmin: Boolean(participant.isAdmin),
+          isSuperAdmin: Boolean(participant.isSuperAdmin)
+        };
+      } catch (error) {
+        logger.warn(
+          `Unable to load contact info for participant ${participant.id._serialized} in group ${normalizedGroupId}:`,
+          error
+        );
+
+        return {
+          id: participant.id._serialized,
+          number: participant.id.user,
+          name: participant.id.user,
+          isAdmin: Boolean(participant.isAdmin),
+          isSuperAdmin: Boolean(participant.isSuperAdmin)
+        };
+      }
+    })
+  );
+
+  return participants.sort((a, b) => a.number.localeCompare(b.number));
+}
+
 module.exports = {
   initializeSessionManager,
   initializeSession,
   getSession,
   getAllSessions,
-  closeSession
+  closeSession,
+  getSessionChats,
+  getSessionGroups,
+  getGroupParticipants
 };
-

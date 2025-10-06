@@ -1,7 +1,9 @@
 const express = require('express');
+const multer = require('multer');
 const messageController = require('../controllers/message.controller');
 
 const router = express.Router();
+const upload = multer();
 
 /**
  * @route   GET /api/messages/:id
@@ -22,7 +24,10 @@ router.get('/session/:sessionId', messageController.getMessages);
  * @desc    Send a message
  * @access  Public
  */
-router.post('/session/:sessionId/send', messageController.sendMessageHandler);
+router.post(
+  '/session/:sessionId/send',
+  upload.single('media'),
+  messageController.sendMessageHandler
+);
 
 module.exports = router;
-

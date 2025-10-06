@@ -49,14 +49,18 @@ model Message {
   toNumber    String?  @map("to_number")
   contactName String?  @map("contact_name")
   groupId     String?  @map("group_id")
+  chatName    String?  @map("chat_name")
   messageType String   @map("message_type")
   content     String
+  author      String?  @map("author")
+  fromMe      Boolean  @default(false) @map("from_me")
   timestamp   DateTime
   webhookSent Boolean  @default(false) @map("webhook_sent")
   createdAt   DateTime @default(now()) @map("created_at")
   session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@map("messages")
+  @@unique([sessionId, messageId])
 }
 
 model Webhook {

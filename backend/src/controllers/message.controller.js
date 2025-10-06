@@ -69,13 +69,144 @@ async function getMessages(req, res, next) {
 async function sendMessageHandler(req, res, next) {
   try {
     const { sessionId } = req.params;
-    const { to, message } = req.body;
+    const { to } = req.body;
+    const message = typeof req.body.message === 'string' ? req.body.message : '';
+    const captionField =
+      typeof req.body.caption === 'string' && req.body.caption.trim() !== ''
+        ? req.body.caption
+        : null;
+    const uploadedFile = req.file;
+    let rawMedia = req.body.media;
+    const mediaTypeField =
+      typeof req.body.mediaType === 'string' && req.body.mediaType.trim() !== ''
+        ? req.body.mediaType.trim().toLowerCase()
+        : null;
+    const mediaMimeTypeField =
+      typeof req.body.mediaMimeType === 'string' && req.body.mediaMimeType.trim() !== ''
+        ? req.body.mediaMimeType.trim()
+        : null;
+    const mediaFilenameField =
+      typeof req.body.mediaFilename === 'string' && req.body.mediaFilename.trim() !== ''
+        ? req.body.mediaFilename.trim()
+        : null;
 
-    // Validate required fields
-    if (!to || !message) {
+    if (!to) {
       return res.status(400).json({
         status: 'error',
-        message: 'Recipient (to) and message are required'
+        message: 'Recipient (to) is required'
+      });
+    }
+
+    const hasMessage = message.trim() !== '';
+
+    let mediaPayload = null;
+
+    if (uploadedFile) {
+      if (!uploadedFile.mimetype || !uploadedFile.mimetype.startsWith('image/')) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'Uploaded media must be an image file'
+        });
+      }
+
+      mediaPayload = {
+        type: 'image',
+        data: uploadedFile.buffer.toString('base64'),
+        mimetype: uploadedFile.mimetype,
+        filename: uploadedFile.originalname,
+        caption: captionField ?? (hasMessage ? message : undefined)
+      };
+    }
+
+    if (!mediaPayload && rawMedia) {
+      let parsedMedia = rawMedia;
+
+      if (typeof rawMedia === 'string') {
+        const trimmed = rawMedia.trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          try {
+            parsedMedia = JSON.parse(trimmed);
+          } catch (error) {
+            return res.status(400).json({
+              status: 'error',
+              message: 'Media payload must be valid JSON'
+            });
+          }
+        } else {
+          const effectiveType = mediaTypeField || 'image';
+          if (effectiveType !== 'image') {
+            return res.status(400).json({
+              status: 'error',
+              message: 'Only image media type is currently supported'
+            });
+          }
+
+          if (!mediaMimeTypeField) {
+            return res.status(400).json({
+              status: 'error',
+              message: 'Media mimetype is required when providing base64 data'
+            });
+          }
+
+          mediaPayload = {
+            type: effectiveType,
+            data: trimmed,
+            mimetype: mediaMimeTypeField,
+            filename: mediaFilenameField || undefined,
+            caption: captionField ?? (hasMessage ? message : undefined)
+          };
+        }
+      }
+
+      if (!mediaPayload) {
+        const hasMediaObject = parsedMedia && typeof parsedMedia === 'object';
+        if (hasMediaObject) {
+          const {
+            type,
+            url = null,
+            data = null,
+            mimetype = null,
+            filename = null,
+            caption = null
+          } = parsedMedia;
+
+          if (!type || type !== 'image') {
+            return res.status(400).json({
+              status: 'error',
+              message: 'Only image media type is currently supported'
+            });
+          }
+
+          if (!url && !data) {
+            return res.status(400).json({
+              status: 'error',
+              message: 'Media payload must include either a url or base64 data field'
+            });
+          }
+
+          if (data && !mimetype) {
+            return res.status(400).json({
+              status: 'error',
+              message: 'Media mimetype is required when providing base64 data'
+            });
+          }
+
+          mediaPayload = {
+            type,
+            url,
+            data,
+            mimetype,
+            filename,
+            caption: caption ?? captionField ?? (hasMessage ? message : undefined)
+          };
+        }
+      }
+    }
+
+    if (!hasMessage && !mediaPayload) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Either message text or media payload is required'
       });
     }
 
@@ -100,7 +231,15 @@ async function sendMessageHandler(req, res, next) {
     }
 
     // Send message
-    const sentMessage = await sendMessage(parseInt(sessionId), to, message);
+    const caption = mediaPayload?.caption ?? (captionField ?? (hasMessage ? message : ''));
+    const sentMessage = await sendMessage(
+      parseInt(sessionId),
+      to,
+      caption,
+      mediaPayload
+        ? { media: mediaPayload }
+        : {}
+    );
 
     res.status(200).json({
       status: 'success',
@@ -148,4 +287,3 @@ module.exports = {
   sendMessageHandler,
   getMessageById
 };
-

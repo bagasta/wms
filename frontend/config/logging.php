@@ -54,13 +54,20 @@ return [
     'channels' => [
         'stack' => [
             'driver' => 'stack',
-            'channels' => ['single'],
-            'ignore_exceptions' => false,
+            'channels' => ['single', 'single_fallback'],
+            'ignore_exceptions' => true,
         ],
 
         'single' => [
             'driver' => 'single',
             'path' => storage_path('logs/laravel.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'replace_placeholders' => true,
+        ],
+
+        'single_fallback' => [
+            'driver' => 'single',
+            'path' => env('APP_ENV') === 'production' ? '/tmp/laravel.log' : storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
         ],

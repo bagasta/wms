@@ -10,6 +10,56 @@ All API endpoints are relative to the base URL:
 http://localhost:3000/api
 ```
 
+Set the `PORT` environment variable before starting the backend if you need to override the default.
+
+## Quick Start (cURL)
+
+The following example sequence shows how to create a session, start it, and send both text and media messages using cURL. Adjust the values (phone numbers, URLs, file paths) to match your environment.
+
+```bash
+# Base API endpoint
+API_BASE="http://localhost:3000/api"
+
+# 1. Create a new session
+SESSION_RESPONSE=$(curl -sS -X POST "$API_BASE/sessions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_name": "Demo Session",
+    "webhook_url": "https://example.com/webhook",
+    "user_id": 1
+  }')
+echo "$SESSION_RESPONSE" | jq '.'
+
+# Extract the session ID (requires jq)
+SESSION_ID=$(echo "$SESSION_RESPONSE" | jq -r '.data.id')
+
+# 2. Start the session (scan the QR code that appears in the backend logs/UI)
+curl -sS -X POST "$API_BASE/sessions/$SESSION_ID/start" | jq '.'
+
+# 3. Optionally poll the session to confirm status
+curl -sS "$API_BASE/sessions/$SESSION_ID" | jq '.'
+
+# 4. Send a text message
+curl -sS -X POST "$API_BASE/messages/session/$SESSION_ID/send" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "1234567890@c.us",
+    "message": "Hello from WhatsApp Management System!"
+  }' | jq '.'
+
+# 5. Send an image message using multipart upload
+curl -sS -X POST "$API_BASE/messages/session/$SESSION_ID/send" \
+  -H "Content-Type: multipart/form-data" \
+  -F "to=1234567890@c.us" \
+  -F "caption=Look at this!" \
+  -F "media=@/path/to/photo.jpg" | jq '.'
+
+# 6. (Optional) Stop the session when finished
+curl -sS -X POST "$API_BASE/sessions/$SESSION_ID/stop" | jq '.'
+```
+
+If `jq` is not available, omit the extraction lines and read the `id` from the raw JSON response.
+
 ## Authentication
 
 Currently, the API does not implement authentication. It is recommended to implement JWT authentication for production use.
@@ -315,7 +365,11 @@ POST /messages/session/:sessionId/send
 
 Sends a message from a specific session.
 
-**Request Body:**
+Either `message` (text) or a `media` payload is required. At this time only media with `type` set to `image` is supported.
+
+**Note:** When your upstream returns binary image data, either supply it as base64 within `media.data` along with a `mimetype`, or upload the file via `multipart/form-data` as shown below. Use `media.url` only if the image is already accessible via HTTP.
+
+**Request Body (text):**
 
 ```json
 {
@@ -323,6 +377,46 @@ Sends a message from a specific session.
   "message": "Hello from WhatsApp Management System!"
 }
 ```
+
+**Request Body (image):**
+
+```json
+{
+  "to": "1234567890@c.us",
+  "media": {
+    "type": "image",
+    "url": "https://example.com/photo.jpg",
+    "caption": "Look at this!"
+  }
+}
+```
+
+Alternatively, you can supply base64-encoded image data instead of a URL:
+
+```json
+{
+  "to": "1234567890@c.us",
+  "media": {
+    "type": "image",
+    "data": "<base64 encoded jpeg>",
+    "mimetype": "image/jpeg",
+    "filename": "photo.jpg",
+    "caption": "Look at this!"
+  }
+}
+```
+
+**Request (multipart/form-data with binary image):**
+
+```bash
+curl -X POST "http://localhost:3000/api/messages/session/1/send" \
+  -H "Content-Type: multipart/form-data" \
+  -F "to=1234567890@c.us" \
+  -F "caption=Look at this!" \
+  -F "media=@/path/to/photo.jpg"
+```
+
+When uploading binary data, the `media` form field must contain the image file. Optional text fields include `message` (used as a caption when provided) and `caption`.
 
 **Response Example:**
 
@@ -524,4 +618,3 @@ The API does not currently implement versioning. Future versions may include ver
 ## Support
 
 For issues or questions, please open an issue on the GitHub repository or contact the maintainers.
-

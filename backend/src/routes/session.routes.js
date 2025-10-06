@@ -59,5 +59,25 @@ router.post('/:id/stop', sessionController.stopSession);
  */
 router.get('/:id/qr', sessionController.getSessionQR);
 
-module.exports = router;
+/**
+ * @route   GET /api/sessions/:id/chats
+ * @desc    Get chats for a session
+ * @access  Public
+ */
+router.get('/:id/chats', sessionController.getSessionChats);
 
+/**
+ * @route   GET /api/sessions/:id/groups
+ * @desc    Get WhatsApp groups for a session
+ * @access  Public
+ */
+router.get('/:id/groups', sessionController.getSessionGroups);
+
+/**
+ * @route   GET /api/sessions/:id/groups/:groupId/members
+ * @desc    Get members for a WhatsApp group
+ * @access  Public
+ */
+router.get('/:id/groups/:groupId/members', sessionController.getGroupMembers);
+
+module.exports = router;

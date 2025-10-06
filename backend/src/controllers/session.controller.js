@@ -1,6 +1,13 @@
 const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
-const { initializeSession, getSession, closeSession } = require('../services/sessionManager');
+const {
+  initializeSession,
+  getSession,
+  closeSession,
+  getSessionChats,
+  getSessionGroups,
+  getGroupParticipants
+} = require('../services/sessionManager');
 
 const prisma = new PrismaClient();
 
@@ -354,6 +361,177 @@ async function getSessionQR(req, res, next) {
   }
 }
 
+/**
+ * Get list of WhatsApp groups for a session
+ */
+async function getSessionGroupsHandler(req, res, next) {
+  const sessionId = parseInt(req.params.id, 10);
+
+  if (Number.isNaN(sessionId)) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Invalid session ID'
+    });
+  }
+
+  try {
+    const sessionRecord = await prisma.session.findUnique({ where: { id: sessionId } });
+
+    if (!sessionRecord) {
+      return res.status(404).json({
+        status: 'error',
+        message: `Session with ID ${sessionId} not found`
+      });
+    }
+
+    if (sessionRecord.status !== 'connected') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Session is not connected. Please start the WhatsApp session before fetching groups.'
+      });
+    }
+
+    if (!getSession(sessionId)) {
+      try {
+        await initializeSession(sessionId);
+      } catch (error) {
+        logger.error(`Unable to initialize session ${sessionId} for group listing:`, error);
+        return res.status(500).json({
+          status: 'error',
+          message: 'Unable to connect to WhatsApp session. Please try again shortly.'
+        });
+      }
+    }
+
+    const groups = await getSessionGroups(sessionId);
+
+    return res.status(200).json({
+      status: 'success',
+      data: groups
+    });
+  } catch (error) {
+    logger.error(`Error fetching groups for session ${sessionId}:`, error);
+    next(error);
+  }
+}
+
+/**
+ * Get chats (groups and direct) for a session
+ */
+async function getSessionChatsHandler(req, res, next) {
+  const sessionId = parseInt(req.params.id, 10);
+
+  if (Number.isNaN(sessionId)) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Invalid session ID'
+    });
+  }
+
+  try {
+    const sessionRecord = await prisma.session.findUnique({ where: { id: sessionId } });
+
+    if (!sessionRecord) {
+      return res.status(404).json({
+        status: 'error',
+        message: `Session with ID ${sessionId} not found`
+      });
+    }
+
+    if (sessionRecord.status !== 'connected') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Session is not connected. Please start the WhatsApp session before fetching chats.'
+      });
+    }
+
+    if (!getSession(sessionId)) {
+      try {
+        await initializeSession(sessionId);
+      } catch (error) {
+        logger.error(`Unable to initialize session ${sessionId} for chat listing:`, error);
+        return res.status(500).json({
+          status: 'error',
+          message: 'Unable to connect to WhatsApp session. Please try again shortly.'
+        });
+      }
+    }
+
+    const chats = await getSessionChats(sessionId);
+
+    return res.status(200).json({
+      status: 'success',
+      data: chats.map((chat) => ({
+        ...chat,
+        lastMessageTimestamp: chat.lastMessageTimestamp
+          ? chat.lastMessageTimestamp.toISOString()
+          : null
+      }))
+    });
+  } catch (error) {
+    logger.error(`Error fetching chats for session ${sessionId}:`, error);
+    next(error);
+  }
+}
+
+/**
+ * Get members for a specific WhatsApp group
+ */
+async function getGroupMembersHandler(req, res, next) {
+  const sessionId = parseInt(req.params.id, 10);
+  const rawGroupId = decodeURIComponent(req.params.groupId || '');
+
+  if (Number.isNaN(sessionId) || !rawGroupId) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Session ID and group ID are required'
+    });
+  }
+
+  try {
+    const sessionRecord = await prisma.session.findUnique({ where: { id: sessionId } });
+
+    if (!sessionRecord) {
+      return res.status(404).json({
+        status: 'error',
+        message: `Session with ID ${sessionId} not found`
+      });
+    }
+
+    if (sessionRecord.status !== 'connected') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Session is not connected. Please start the WhatsApp session before fetching members.'
+      });
+    }
+
+    if (!getSession(sessionId)) {
+      try {
+        await initializeSession(sessionId);
+      } catch (error) {
+        logger.error(`Unable to initialize session ${sessionId} for group extraction:`, error);
+        return res.status(500).json({
+          status: 'error',
+          message: 'Unable to connect to WhatsApp session. Please try again shortly.'
+        });
+      }
+    }
+
+    const members = await getGroupParticipants(sessionId, rawGroupId);
+
+    return res.status(200).json({
+      status: 'success',
+      data: members
+    });
+  } catch (error) {
+    logger.error(
+      `Error fetching members for group ${rawGroupId} on session ${sessionId}:`,
+      error
+    );
+    next(error);
+  }
+}
+
 module.exports = {
   getAllSessions,
   getSessionById,
@@ -362,6 +540,8 @@ module.exports = {
   deleteSession,
   startSession,
   stopSession,
-  getSessionQR
+  getSessionQR,
+  getSessionChats: getSessionChatsHandler,
+  getSessionGroups: getSessionGroupsHandler,
+  getGroupMembers: getGroupMembersHandler
 };
-

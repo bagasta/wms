@@ -118,9 +118,14 @@ class DashboardController extends Controller
                 $payload = $response->json();
                 $data = $payload['data'] ?? [];
 
-                return response()->json([
+                $session->update([
                     'qr_code' => $data['qr_code'] ?? null,
-                    'status' => $data['status'] ?? 'disconnected',
+                    'status' => $data['status'] ?? $session->status,
+                ]);
+
+                return response()->json([
+                    'qr_code' => $session->qr_code,
+                    'status' => $session->status,
                 ]);
             }
         } catch (\Exception $e) {
