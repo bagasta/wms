@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 class DashboardController extends Controller
 {
@@ -47,15 +48,7 @@ class DashboardController extends Controller
                 'user_id' => Auth::id(),
             ]);
 
-            if ($response->successful()) {
-                $session->update(['status' => 'connecting']);
-
-                try {
-                    Http::post(config('app.backend_url') . '/api/sessions/' . $session->id . '/start');
-                } catch (\Exception $e) {
-                    logger()->error('Failed to start session: ' . $e->getMessage());
-                }
-            }
+            // Backend session is created but not started automatically.
         } catch (\Exception $e) {
             // Log error but don't fail the creation
             logger()->error('Failed to create session in backend: ' . $e->getMessage());
@@ -143,7 +136,14 @@ class DashboardController extends Controller
             $response = Http::post(config('app.backend_url') . '/api/sessions/' . $session->id . '/start');
             
             if ($response->successful()) {
-                $session->update(['status' => 'connecting']);
+                $payload = $response->json();
+                $message = $payload['message'] ?? '';
+                $isAlreadyConnected = Str::contains(Str::lower($message), 'already connected');
+
+                $session->update([
+                    'status' => $isAlreadyConnected ? 'connected' : 'connecting'
+                ]);
+
                 return response()->json(['success' => true]);
             }
         } catch (\Exception $e) {

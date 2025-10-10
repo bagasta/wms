@@ -3,6 +3,7 @@ const qrcode = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
+const fsPromises = fs.promises;
 const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
 const { processIncomingMessage } = require('./messageHandler');
@@ -103,13 +104,10 @@ async function updateSessionRecord(sessionId, data) {
  */
 async function initializeSessionManager() {
   try {
-    // Get all sessions with status 'connected' or 'connecting'
+    // Get all sessions that should be actively connected
     const activeSessions = await prisma.session.findMany({
       where: {
-        OR: [
-          { status: 'connected' },
-          { status: 'connecting' }
-        ]
+        status: 'connected'
       }
     });
 
@@ -151,8 +149,27 @@ async function initializeSession(sessionId) {
 
     logger.info(`Initializing session ${sessionId} (${session.sessionName})`);
 
+    if (session.status !== 'connected') {
+      await updateSessionRecord(sessionId, {
+        status: 'connecting',
+        qrCode: null
+      });
+    }
+
     // Create session directory if it doesn't exist
-    const sessionDir = path.join(process.env.WWEBJS_DATA_DIR || '.wwebjs_auth', `session-${sessionId}`);
+    const baseAuthDir = process.env.WWEBJS_DATA_DIR || '.wwebjs_auth';
+    const sessionDir = path.join(baseAuthDir, `session-${sessionId}`);
+    const legacySessionDir = path.join(baseAuthDir, `session-session-${sessionId}`);
+
+    if (fs.existsSync(legacySessionDir)) {
+      try {
+        fs.rmSync(legacySessionDir, { recursive: true, force: true });
+        logger.info(`Removed legacy auth directory ${legacySessionDir} for session ${sessionId}`);
+      } catch (legacyError) {
+        logger.warn(`Unable to remove legacy auth directory ${legacySessionDir} for session ${sessionId}:`, legacyError);
+      }
+    }
+
     if (!fs.existsSync(sessionDir)) {
       fs.mkdirSync(sessionDir, { recursive: true });
     }
@@ -160,8 +177,9 @@ async function initializeSession(sessionId) {
     // Create WhatsApp client
     const client = new Client({
       authStrategy: new LocalAuth({
-        clientId: `session-${sessionId}`,
-        dataPath: process.env.WWEBJS_DATA_DIR || '.wwebjs_auth'
+        // Use plain session ID so LocalAuth creates <base>/session-<id>
+        clientId: String(sessionId),
+        dataPath: baseAuthDir
       }),
       puppeteer: {
         args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -450,8 +468,23 @@ function normalizeChatName(chat) {
     return 'Unknown chat';
   }
 
-  if (chat.name) {
-    return chat.name;
+  const contactPushName = chat.contact?.pushname || chat.contact?.shortName || null;
+  if (!chat.isGroup && contactPushName) {
+    return contactPushName;
+  }
+
+  if (chat.isGroup) {
+    if (chat.formattedTitle) {
+      return chat.formattedTitle;
+    }
+
+    if (chat.name) {
+      return chat.name;
+    }
+  }
+
+  if (contactPushName) {
+    return contactPushName;
   }
 
   if (chat.formattedTitle) {
@@ -462,15 +495,37 @@ function normalizeChatName(chat) {
     return chat.id.user;
   }
 
-  if (chat.contact && chat.contact.pushname) {
-    return chat.contact.pushname;
-  }
-
   if (chat.id && chat.id.user) {
     return chat.id.user;
   }
 
   return chat.id?._serialized || 'Unknown chat';
+}
+
+/**
+ * Remove the persisted authentication data for a session
+ * @param {number} sessionId - The session ID
+ * @returns {Promise<boolean>} - True if the auth data directory was removed
+ */
+async function removeSessionAuthData(sessionId) {
+  const baseDir = process.env.WWEBJS_DATA_DIR || '.wwebjs_auth';
+  const sessionDir = path.join(baseDir, `session-${sessionId}`);
+  const legacySessionDir = path.join(baseDir, `session-session-${sessionId}`);
+
+  try {
+    await fsPromises.rm(sessionDir, { recursive: true, force: true });
+    logger.info(`Removed auth data for session ${sessionId} at ${sessionDir}`);
+
+    if (fs.existsSync(legacySessionDir)) {
+      await fsPromises.rm(legacySessionDir, { recursive: true, force: true });
+      logger.info(`Removed legacy auth directory for session ${sessionId} at ${legacySessionDir}`);
+    }
+
+    return true;
+  } catch (error) {
+    logger.error(`Failed to remove auth data for session ${sessionId} at ${sessionDir}:`, error);
+    throw error;
+  }
 }
 
 function extractLastMessageSummary(chat) {
@@ -588,7 +643,7 @@ async function getGroupParticipants(sessionId, groupId) {
         return {
           id: participant.id._serialized,
           number: contact?.number || participant.id.user,
-          name: contact?.name || contact?.pushname || contact?.shortName || participant.id.user,
+          name: contact?.pushname || contact?.shortName || contact?.name || participant.id.user,
           isAdmin: Boolean(participant.isAdmin),
           isSuperAdmin: Boolean(participant.isSuperAdmin)
         };
@@ -618,6 +673,7 @@ module.exports = {
   getSession,
   getAllSessions,
   closeSession,
+  removeSessionAuthData,
   getSessionChats,
   getSessionGroups,
   getGroupParticipants,

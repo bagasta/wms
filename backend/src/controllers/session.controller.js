@@ -7,7 +7,8 @@ const {
   getSessionChats,
   getSessionGroups,
   getGroupParticipants,
-  restartSession
+  restartSession,
+  removeSessionAuthData
 } = require('../services/sessionManager');
 
 const prisma = new PrismaClient();
@@ -225,6 +226,15 @@ async function deleteSession(req, res, next) {
       where: { id: parseInt(id) }
     });
 
+    try {
+      await removeSessionAuthData(sessionId);
+    } catch (cleanupError) {
+      logger.warn(
+        `Failed to remove auth directory for session ${id}:`,
+        cleanupError
+      );
+    }
+
     logger.info(`Session ${id} deleted`);
 
     res.status(200).json({
@@ -259,14 +269,19 @@ async function startSession(req, res, next) {
       });
     }
 
-    // Initialize session
-    await initializeSession(parseInt(id));
+    if (existingSession.status === 'connected') {
+      return res.status(200).json({
+        status: 'success',
+        message: `Session ${id} is already connected`
+      });
+    }
 
-    // Update session status
+    // Mark session as connecting and clear any stale QR data
     await prisma.session.update({
       where: { id: parseInt(id) },
       data: {
-        status: 'connecting'
+        status: 'connecting',
+        qrCode: null
       }
     });
 

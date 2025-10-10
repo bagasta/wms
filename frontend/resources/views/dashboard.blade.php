@@ -1471,8 +1471,18 @@
         let qrInterval;
 
         function showQrModal(sessionId) {
+            clearInterval(qrInterval);
             document.getElementById('qrModal').classList.remove('hidden');
             document.getElementById('qrModal').classList.add('flex');
+            document.getElementById('qrCodeContainer').innerHTML =
+                '<div class="w-48 h-48 md:w-64 md:h-64 bg-gray-700/80 border-2 border-dashed border-gray-600 rounded-xl mx-auto flex items-center justify-center backdrop-blur-sm">' +
+                    '<div class="text-center">' +
+                        '<svg class="w-12 h-12 text-gray-400 mx-auto mb-3 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+                            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>' +
+                        '</svg>' +
+                        '<span class="text-gray-400">Loading QR Code...</span>' +
+                    '</div>' +
+                '</div>';
 
             const fetchQr = () => {
                 fetch(`/sessions/${sessionId}/qr`)
@@ -1506,6 +1516,7 @@
             clearInterval(qrInterval);
             document.getElementById('qrModal').classList.add('hidden');
             document.getElementById('qrModal').classList.remove('flex');
+            qrInterval = null;
         }
 
         function startSession(sessionId) {

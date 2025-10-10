@@ -9,6 +9,45 @@ const logger = require('../utils/logger');
 const prisma = new PrismaClient();
 const DEFAULT_TYPING_DURATION_MS = 1200;
 
+function resolveContactDisplayName(contact) {
+  if (!contact) {
+    return null;
+  }
+
+  return (
+    contact.pushname ||
+    contact.shortName ||
+    contact.name ||
+    contact.number ||
+    null
+  );
+}
+
+function resolveChatDisplayName(chat, contact) {
+  if (!chat) {
+    return null;
+  }
+
+  if (chat.isGroup) {
+    return (
+      chat.formattedTitle ||
+      chat.name ||
+      chat.id?._serialized ||
+      null
+    );
+  }
+
+  const waName = resolveContactDisplayName(contact);
+  return (
+    waName ||
+    chat.formattedTitle ||
+    chat.name ||
+    chat.id?.user ||
+    chat.id?._serialized ||
+    null
+  );
+}
+
 /**
  * Process an incoming WhatsApp message
  * @param {number} sessionId - The session ID
@@ -76,9 +115,9 @@ async function processIncomingMessage(sessionId, msg, isMention = false) {
     const contact = await msg.getContact();
     
     // Prepare message data
-    const chatId = chat.isGroup ? chat.id._serialized : null;
-    const chatName = chat.name || chat.formattedTitle || contact.name || contact.pushname || null;
-    const contactName = contact.name || contact.pushname || contact.number || null;
+    const chatId = chat && chat.isGroup ? chat.id._serialized : null;
+    const chatName = resolveChatDisplayName(chat, contact);
+    const contactName = resolveContactDisplayName(contact);
 
     const messageData = {
       sessionId,
@@ -516,12 +555,8 @@ async function sendMessage(sessionId, to, content, options = {}) {
     }
 
     const persistedGroupId = chat && chat.isGroup ? chat.id._serialized : null;
-    const chatName = chat
-      ? chat.name || chat.formattedTitle || null
-      : null;
-    const contactName = !chat || chat.isGroup
-      ? contact?.name || contact?.pushname || null
-      : contact?.name || contact?.pushname || contact?.number || null;
+    const chatName = resolveChatDisplayName(chat, contact);
+    const contactName = resolveContactDisplayName(contact);
 
     const messageData = {
       sessionId,
