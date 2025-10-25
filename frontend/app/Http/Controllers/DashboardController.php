@@ -6,13 +6,18 @@ use App\Models\WhatsAppSession;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 
 class DashboardController extends Controller
 {
     public function index()
     {
-        $sessions = Auth::user()->whatsappSessions()->latest()->get();
-        
+        $sessions = collect();
+
+        if (Schema::hasTable('whatsapp_sessions') && Auth::check()) {
+            $sessions = Auth::user()->whatsappSessions()->latest()->get();
+        }
+
         return view('dashboard', compact('sessions'));
     }
 
@@ -22,6 +27,10 @@ class DashboardController extends Controller
             'session_name' => 'required|string|max:255',
             'webhook_url' => 'nullable|url',
         ]);
+
+        if (!Schema::hasTable('whatsapp_sessions')) {
+            return redirect()->route('dashboard')->with('error', 'Session storage is not available. Please run migrations.');
+        }
 
         $session = Auth::user()->whatsappSessions()->create([
             'session_name' => $request->session_name,
@@ -35,10 +44,17 @@ class DashboardController extends Controller
                 'session_id' => $session->id,
                 'session_name' => $session->session_name,
                 'webhook_url' => $session->webhook_url,
+                'user_id' => Auth::id(),
             ]);
 
             if ($response->successful()) {
                 $session->update(['status' => 'connecting']);
+
+                try {
+                    Http::post(config('app.backend_url') . '/api/sessions/' . $session->id . '/start');
+                } catch (\Exception $e) {
+                    logger()->error('Failed to start session: ' . $e->getMessage());
+                }
             }
         } catch (\Exception $e) {
             // Log error but don't fail the creation
@@ -99,7 +115,9 @@ class DashboardController extends Controller
             $response = Http::get(config('app.backend_url') . '/api/sessions/' . $session->id . '/qr');
             
             if ($response->successful()) {
-                $data = $response->json();
+                $payload = $response->json();
+                $data = $payload['data'] ?? [];
+
                 return response()->json([
                     'qr_code' => $data['qr_code'] ?? null,
                     'status' => $data['status'] ?? 'disconnected',

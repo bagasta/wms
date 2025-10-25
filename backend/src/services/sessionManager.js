@@ -1,5 +1,6 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
 const { PrismaClient } = require('@prisma/client');
@@ -84,17 +85,24 @@ async function initializeSession(sessionId) {
     client.on('qr', async (qr) => {
       // Generate QR code for terminal (for debugging)
       qrcode.generate(qr, { small: true });
-      
-      // Save QR code to database
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: {
-          qrCode: qr,
-          status: 'connecting'
-        }
-      });
-      
-      logger.info(`QR code generated for session ${sessionId}`);
+
+      try {
+        // Convert QR string to data URL for dashboard display
+        const qrDataUrl = await QRCode.toDataURL(qr);
+
+        // Save QR code to database
+        await prisma.session.update({
+          where: { id: sessionId },
+          data: {
+            qrCode: qrDataUrl,
+            status: 'connecting'
+          }
+        });
+
+        logger.info(`QR code generated for session ${sessionId}`);
+      } catch (error) {
+        logger.error(`Failed to generate QR code for session ${sessionId}:`, error);
+      }
     });
 
     client.on('ready', async () => {

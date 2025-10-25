@@ -16,12 +16,12 @@ return new class extends Migration
             $table->foreignId('user_id')->constrained()->onDelete('cascade');
             $table->string('session_name');
             $table->string('webhook_url')->nullable();
-            $table->enum('status', ['disconnected', 'connecting', 'connected'])->default('disconnected');
+            $table->string('status')->default('disconnected');
             $table->text('qr_code')->nullable();
             $table->json('session_data')->nullable();
             $table->timestamp('last_seen')->nullable();
             $table->timestamps();
-            
+
             $table->unique(['user_id', 'session_name']);
         });
     }
