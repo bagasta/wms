@@ -111,8 +111,21 @@ async function processIncomingMessage(sessionId, msg, isMention = false) {
     }
 
     // Get message details
-    const chat = await msg.getChat();
-    const contact = await msg.getContact();
+    let chat = null;
+    try {
+      chat = await msg.getChat();
+    } catch (error) {
+      logger.warn(`Unable to load chat info for incoming message ${msg.id.id}:`, error);
+    }
+
+    let contact = null;
+    try {
+      contact = await msg.getContact();
+    } catch (error) {
+      // Recent WhatsApp Web updates occasionally break contact lookups in wwebjs;
+      // continue without contact metadata instead of failing the whole pipeline.
+      logger.warn(`Unable to load contact info for incoming message ${msg.id.id}:`, error);
+    }
     
     // Prepare message data
     const chatId = chat && chat.isGroup ? chat.id._serialized : null;

@@ -13,6 +13,85 @@ const {
 
 const prisma = new PrismaClient();
 const STALE_QR_THRESHOLD_MS = 2 * 60 * 1000;
+const FALLBACK_CHAT_HISTORY_LIMIT = 500;
+
+function sanitizeIdentifier(identifier) {
+  if (!identifier) {
+    return null;
+  }
+
+  return String(identifier).split('@')[0];
+}
+
+function resolveConversationNameFromMessage(message) {
+  if (!message) {
+    return 'Unknown chat';
+  }
+
+  if (message.chatName) {
+    return message.chatName;
+  }
+
+  if (message.contactName) {
+    return message.contactName;
+  }
+
+  const identifier = message.groupId || (message.fromMe ? message.toNumber : message.fromNumber);
+  return sanitizeIdentifier(identifier) || 'Unknown chat';
+}
+
+async function buildFallbackChatsFromMessages(sessionId) {
+  const messages = await prisma.message.findMany({
+    where: { sessionId },
+    orderBy: { timestamp: 'desc' },
+    take: FALLBACK_CHAT_HISTORY_LIMIT
+  });
+
+  const chatMap = new Map();
+
+  messages.forEach((message) => {
+    const conversationId =
+      message.groupId || (message.fromMe ? message.toNumber : message.fromNumber);
+    if (!conversationId) {
+      return;
+    }
+
+    if (!chatMap.has(conversationId)) {
+      chatMap.set(conversationId, {
+        id: conversationId,
+        name: resolveConversationNameFromMessage(message),
+        isGroup: Boolean(message.groupId),
+        unreadCount: 0,
+        isMuted: false,
+        isArchived: false,
+        isTyping: false,
+        lastMessagePreview: null,
+        lastMessageTimestamp: null,
+        lastMessageFromMe: null
+      });
+    }
+
+    const chat = chatMap.get(conversationId);
+    const messageTimestamp = message.timestamp ? new Date(message.timestamp) : null;
+
+    if (messageTimestamp) {
+      const currentTime = chat.lastMessageTimestamp
+        ? chat.lastMessageTimestamp.getTime()
+        : 0;
+      if (messageTimestamp.getTime() > currentTime) {
+        chat.lastMessageTimestamp = messageTimestamp;
+        chat.lastMessagePreview = message.content || message.messageType || null;
+        chat.lastMessageFromMe = Boolean(message.fromMe);
+      }
+    }
+  });
+
+  return Array.from(chatMap.values()).sort((a, b) => {
+    const aTime = a.lastMessageTimestamp ? a.lastMessageTimestamp.getTime() : 0;
+    const bTime = b.lastMessageTimestamp ? b.lastMessageTimestamp.getTime() : 0;
+    return bTime - aTime;
+  });
+}
 
 /**
  * Get all sessions
@@ -503,26 +582,32 @@ async function getSessionChatsHandler(req, res, next) {
       });
     }
 
-    if (sessionRecord.status !== 'connected') {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Session is not connected. Please start the WhatsApp session before fetching chats.'
-      });
-    }
+    let chats = [];
+    let shouldFallbackToHistory = sessionRecord.status !== 'connected';
 
-    if (!getSession(sessionId)) {
-      try {
-        await initializeSession(sessionId);
-      } catch (error) {
-        logger.error(`Unable to initialize session ${sessionId} for chat listing:`, error);
-        return res.status(500).json({
-          status: 'error',
-          message: 'Unable to connect to WhatsApp session. Please try again shortly.'
-        });
+    if (!shouldFallbackToHistory) {
+      if (!getSession(sessionId)) {
+        try {
+          await initializeSession(sessionId);
+        } catch (error) {
+          logger.error(`Unable to initialize session ${sessionId} for chat listing:`, error);
+          shouldFallbackToHistory = true;
+        }
+      }
+
+      if (!shouldFallbackToHistory) {
+        try {
+          chats = await getSessionChats(sessionId);
+        } catch (error) {
+          logger.error(`Unable to fetch live chats for session ${sessionId}, falling back to stored history:`, error);
+          shouldFallbackToHistory = true;
+        }
       }
     }
 
-    const chats = await getSessionChats(sessionId);
+    if (shouldFallbackToHistory) {
+      chats = await buildFallbackChatsFromMessages(sessionId);
+    }
 
     return res.status(200).json({
       status: 'success',

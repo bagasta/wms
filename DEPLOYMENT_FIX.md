@@ -20,16 +20,33 @@ Created `deploy-fix-permissions.sh` script that:
 
 ## Deployment Instructions
 
-1. Upload the updated `config/logging.php` file to your production server
-2. Run the permission fix script:
+1. Upload the updated `config/logging.php` file to your production server.
+2. (Optional but recommended) Back up the live application directory:
+   ```bash
+   sudo cp -a /var/www/wms/frontend /var/www/wms/frontend.backup.$(date +%Y%m%d%H%M)
+   ```
+3. Sync the working copy you build from (e.g. `/root/wms/frontend`) into the live nginx path:
+   ```bash
+   # install rsync if needed: sudo apt install rsync
+   rsync -av --delete /root/wms/frontend/ /var/www/wms/frontend/
+   sudo chown -R www-data:www-data /var/www/wms/frontend
+   ```
+   > Tip: perform all future `git pull`, `npm run build`, and `php artisan` commands directly inside `/var/www/wms/frontend` so the working copy and live copy stay in sync.
+4. Run the permission fix script from the project root:
    ```bash
    sudo ./deploy-fix-permissions.sh
    ```
-3. Clear Laravel cache:
+5. Clear Laravel cache (from `/var/www/wms/frontend`):
    ```bash
+   php artisan optimize:clear
    php artisan cache:clear
    php artisan config:clear
    php artisan view:clear
+   ```
+6. Reload services and verify:
+   ```bash
+   sudo systemctl reload nginx
+   sudo systemctl reload php8.2-fpm    # adjust PHP-FPM version as needed
    ```
 
 ## Verification
