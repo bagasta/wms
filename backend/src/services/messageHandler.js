@@ -9,6 +9,14 @@ const logger = require('../utils/logger');
 const prisma = new PrismaClient();
 const DEFAULT_TYPING_DURATION_MS = 1200;
 
+function isContactMethodsMissing(error) {
+  const message = error?.message || '';
+  return (
+    message.includes('getIsMyContact is not a function') ||
+    message.includes('ContactMethods.getIsMyContact')
+  );
+}
+
 function resolveContactDisplayName(contact) {
   if (!contact) {
     return null;
@@ -124,7 +132,13 @@ async function processIncomingMessage(sessionId, msg, isMention = false) {
     } catch (error) {
       // Recent WhatsApp Web updates occasionally break contact lookups in wwebjs;
       // continue without contact metadata instead of failing the whole pipeline.
-      logger.warn(`Unable to load contact info for incoming message ${msg.id.id}:`, error);
+      if (isContactMethodsMissing(error)) {
+        logger.debug(
+          `Skipping contact lookup for incoming message ${msg.id.id} because ContactMethods API changed; proceeding without contact metadata`
+        );
+      } else {
+        logger.warn(`Unable to load contact info for incoming message ${msg.id.id}:`, error);
+      }
     }
     
     // Prepare message data
@@ -564,7 +578,13 @@ async function sendMessage(sessionId, to, content, options = {}) {
     try {
       contact = await msg.getContact();
     } catch (error) {
-      logger.warn(`Unable to load contact info for outbound message ${msg.id.id}:`, error);
+      if (isContactMethodsMissing(error)) {
+        logger.debug(
+          `Skipping contact lookup for outbound message ${msg.id.id} because ContactMethods API changed; proceeding without contact metadata`
+        );
+      } else {
+        logger.warn(`Unable to load contact info for outbound message ${msg.id.id}:`, error);
+      }
     }
 
     const persistedGroupId = chat && chat.isGroup ? chat.id._serialized : null;
