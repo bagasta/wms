@@ -63,6 +63,18 @@ function isChatTyping(sessionId, chatId) {
   return Boolean(record.isTyping);
 }
 
+async function safeDestroyClient(sessionId, clientInstance) {
+  if (!clientInstance) return;
+  try {
+    await clientInstance.destroy();
+  } catch (error) {
+    logger.warn(`Failed to destroy client for session ${sessionId}:`, error);
+  } finally {
+    sessions.delete(sessionId);
+    typingStatus.delete(sessionId);
+  }
+}
+
 async function updateSessionRecord(sessionId, data) {
   try {
     const result = await prisma.session.updateMany({
@@ -71,7 +83,9 @@ async function updateSessionRecord(sessionId, data) {
     });
 
     if (result.count === 0) {
-      logger.error(`Session ${sessionId} not found when updating record`);
+      logger.warn(`Session ${sessionId} not found when updating record; cleaning up runtime session if present`);
+      sessions.delete(sessionId);
+      typingStatus.delete(sessionId);
       return false;
     }
 
@@ -208,7 +222,8 @@ async function initializeSession(sessionId) {
         });
 
         if (!updated) {
-          logger.error(`Session ${sessionId} not found when saving QR code`);
+          logger.warn(`Skipping QR persist because session ${sessionId} no longer exists`);
+          await safeDestroyClient(sessionId, client);
         } else {
           logger.info(`QR code generated for session ${sessionId}`);
         }
