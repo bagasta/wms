@@ -101,6 +101,10 @@ async function updateSessionRecord(sessionId, data) {
         info.lastSeen = data.lastSeen;
       }
 
+      if (Object.prototype.hasOwnProperty.call(data, 'qrCode')) {
+        info.qrCode = data.qrCode;
+      }
+
       entry.info = info;
       sessions.set(sessionId, entry);
     }
@@ -226,6 +230,11 @@ async function initializeSession(sessionId) {
           await safeDestroyClient(sessionId, client);
         } else {
           logger.info(`QR code generated for session ${sessionId}`);
+          const existing = sessions.get(sessionId);
+          if (existing) {
+            existing.info.qrCode = qrDataUrl;
+            sessions.set(sessionId, existing);
+          }
         }
       } catch (error) {
         logger.error(`Failed to generate QR code for session ${sessionId}:`, error);
@@ -365,7 +374,8 @@ async function initializeSession(sessionId) {
       info: {
         id: sessionId,
         name: session.sessionName,
-        status: session.status
+        status: session.status,
+        qrCode: null
       }
     });
 

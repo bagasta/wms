@@ -465,12 +465,13 @@ async function getSessionQR(req, res, next) {
     }
 
     // Get session
-    const session = getSession(sessionId);
+    let session = getSession(sessionId);
 
     // If session is not initialized, initialize it
     if (!session) {
       try {
         await initializeSession(sessionId);
+        session = getSession(sessionId);
       } catch (initError) {
         logger.error(`Failed to initialize session ${sessionId} while fetching QR:`, initError);
         return res.status(500).json({
@@ -480,7 +481,9 @@ async function getSessionQR(req, res, next) {
       }
     }
 
-    // Get QR code from database (it's updated by the session manager)
+    // Prefer in-memory QR if available, fallback to DB
+    const runtimeQr = session?.info?.qrCode || null;
+
     const sessionState = await prisma.session.findUnique({
       where: { id: sessionId },
       select: {
@@ -490,7 +493,7 @@ async function getSessionQR(req, res, next) {
       }
     });
 
-    let qrCode = sessionState?.qrCode || null;
+    let qrCode = runtimeQr || sessionState?.qrCode || null;
     let statusValue = sessionState?.status || existingSession.status;
 
     const lastUpdateDate = sessionState?.updatedAt || existingSession.updatedAt;
