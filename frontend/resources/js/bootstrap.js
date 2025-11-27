@@ -9,6 +9,39 @@ window.axios = axios;
 
 window.axios.defaults.headers.common['X-Requested-With'] = 'XMLHttpRequest';
 
+// Log all unhandled errors to the browser console for easier debugging.
+window.addEventListener('error', (event) => {
+    console.error('[Global Error]', {
+        message: event.message,
+        source: event.filename,
+        line: event.lineno,
+        column: event.colno,
+        error: event.error,
+    });
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+    console.error('[Unhandled Promise Rejection]', {
+        reason: event.reason,
+    });
+});
+
+// Log HTTP errors so failed API calls are visible in the console.
+window.axios.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        const config = error.config || {};
+        console.error('[HTTP Error]', {
+            url: config.url,
+            method: config.method,
+            status: error.response?.status,
+            data: error.response?.data,
+            message: error.message,
+        });
+        return Promise.reject(error);
+    },
+);
+
 /**
  * Echo exposes an expressive API for subscribing to channels and listening
  * for events that are broadcast by Laravel. Echo and event broadcasting
