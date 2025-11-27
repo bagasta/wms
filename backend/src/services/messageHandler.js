@@ -8,6 +8,7 @@ const logger = require('../utils/logger');
 
 const prisma = new PrismaClient();
 const DEFAULT_TYPING_DURATION_MS = 1200;
+const DEFAULT_WEBHOOK_TIMEOUT_MS = parseInt(process.env.WEBHOOK_TIMEOUT_MS || '8000', 10);
 
 function isContactMethodsMissing(error) {
   const message = error?.message || '';
@@ -344,6 +345,20 @@ function resolveReplyTarget(message, explicitTarget) {
   return message.fromNumber;
 }
 
+function logAxiosFailure(context, error) {
+  const status = error?.response?.status;
+  const data = error?.response?.data;
+  const message = error?.message || error;
+
+  logger.error(
+    `${context} (status: ${status ?? 'unknown'})`,
+    {
+      message,
+      responseData: data
+    }
+  );
+}
+
 /**
  * Send message to webhook
  * @param {object} session - The session object
@@ -381,11 +396,14 @@ async function sendToWebhook(session, message, media = null) {
     // Send to session webhook if configured
     if (session.webhookUrl) {
       try {
+        logger.info(`Sending webhook for message ${message.id} to ${session.webhookUrl}`);
+
         const response = await axios.post(session.webhookUrl, payload, {
           headers: {
             'Content-Type': 'application/json',
             'User-Agent': 'WhatsApp-Management-System/1.0'
-          }
+          },
+          timeout: DEFAULT_WEBHOOK_TIMEOUT_MS
         });
 
         logger.info(`Webhook sent for message ${message.id} to ${session.webhookUrl}, status: ${response.status}`);
@@ -421,7 +439,10 @@ async function sendToWebhook(session, message, media = null) {
           }
         }
       } catch (error) {
-        logger.error(`Error sending webhook for message ${message.id} to ${session.webhookUrl}:`, error);
+        logAxiosFailure(
+          `Error sending webhook for message ${message.id} to ${session.webhookUrl}`,
+          error
+        );
       }
     }
 
@@ -429,12 +450,15 @@ async function sendToWebhook(session, message, media = null) {
     if (session.webhooks && session.webhooks.length > 0) {
       for (const webhook of session.webhooks) {
         try {
+          logger.info(`Sending webhook for message ${message.id} to ${webhook.url}`);
+
           const response = await axios.post(webhook.url, payload, {
             headers: {
               'Content-Type': 'application/json',
               'User-Agent': 'WhatsApp-Management-System/1.0',
               ...(webhook.secret ? { 'X-Webhook-Secret': webhook.secret } : {})
-            }
+            },
+            timeout: DEFAULT_WEBHOOK_TIMEOUT_MS
           });
 
           logger.info(
@@ -465,7 +489,10 @@ async function sendToWebhook(session, message, media = null) {
             }
           }
         } catch (error) {
-          logger.error(`Error sending webhook for message ${message.id} to ${webhook.url}:`, error);
+          logAxiosFailure(
+            `Error sending webhook for message ${message.id} to ${webhook.url}`,
+            error
+          );
         }
       }
     }
