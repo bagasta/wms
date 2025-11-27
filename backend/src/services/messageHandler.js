@@ -480,10 +480,15 @@ async function sendMessage(sessionId, to, content, options = {}) {
       throw new Error(`Session ${sessionId} not found or not connected`);
     }
 
+    const normalizedRecipient = normalizeRecipientId(to);
+    if (!normalizedRecipient) {
+      throw new Error(`Invalid recipient format for ${to}`);
+    }
+
     // Determine chat ID and validate recipient when needed
-    let chatId = to;
-    if (!chatId.endsWith('@c.us') && !chatId.endsWith('@g.us')) {
-      const numberId = await session.client.getNumberId(to);
+    let chatId = normalizedRecipient.value;
+    if (!normalizedRecipient.isChatId) {
+      const numberId = await session.client.getNumberId(chatId);
       if (!numberId) {
         throw new Error(`Invalid WhatsApp ID for recipient ${to}`);
       }
@@ -655,6 +660,35 @@ function stripBase64Prefix(value) {
   }
 
   return value.replace(/\s+/g, '');
+}
+
+function normalizeRecipientId(rawTo) {
+  if (typeof rawTo !== 'string') {
+    return null;
+  }
+
+  const trimmed = rawTo.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const lower = trimmed.toLowerCase();
+
+  if (lower.endsWith('@g.us') || lower.endsWith('@c.us')) {
+    return { value: trimmed, isChatId: true };
+  }
+
+  if (lower.endsWith('@s.whatsapp.net')) {
+    return { value: trimmed.replace(/@s\.whatsapp\.net$/i, '@c.us'), isChatId: true };
+  }
+
+  if (lower.endsWith('@lid')) {
+    const digits = trimmed.replace(/@lid$/i, '').replace(/[^\d]/g, '');
+    return digits ? { value: digits, isChatId: false } : null;
+  }
+
+  const digitsOnly = trimmed.replace(/[^\d]/g, '');
+  return digitsOnly ? { value: digitsOnly, isChatId: false } : null;
 }
 
 module.exports = {
