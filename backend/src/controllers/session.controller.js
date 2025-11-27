@@ -366,12 +366,10 @@ async function startSession(req, res, next) {
 
     logger.info(`Session ${id} started`);
 
-    // Kick off session initialization immediately so QR is generated without waiting for /qr polling
-    try {
-      await initializeSession(parseInt(id));
-    } catch (initError) {
+    // Kick off session initialization asynchronously so we can respond immediately
+    initializeSession(parseInt(id)).catch((initError) => {
       logger.error(`Failed to initialize session ${id} after start:`, initError);
-    }
+    });
 
     // Fetch latest state (may still be null while QR is being generated)
     const sessionState = await prisma.session.findUnique({
@@ -464,22 +462,8 @@ async function getSessionQR(req, res, next) {
       });
     }
 
-    // Get session
+    // Get session (may be undefined if not yet initialized)
     let session = getSession(sessionId);
-
-    // If session is not initialized, initialize it
-    if (!session) {
-      try {
-        await initializeSession(sessionId);
-        session = getSession(sessionId);
-      } catch (initError) {
-        logger.error(`Failed to initialize session ${sessionId} while fetching QR:`, initError);
-        return res.status(500).json({
-          status: 'error',
-          message: 'Failed to initialize WhatsApp session for QR. Please retry.'
-        });
-      }
-    }
 
     // Prefer in-memory QR if available, fallback to DB
     const runtimeQr = session?.info?.qrCode || null;
@@ -495,6 +479,13 @@ async function getSessionQR(req, res, next) {
 
     let qrCode = runtimeQr || sessionState?.qrCode || null;
     let statusValue = sessionState?.status || existingSession.status;
+
+    // Only kick off initialization if we have no runtime session and are not already connecting/connected
+    if (!session && statusValue !== 'connecting' && statusValue !== 'connected') {
+      initializeSession(sessionId).catch((initError) => {
+        logger.error(`Failed to initialize session ${sessionId} while fetching QR:`, initError);
+      });
+    }
 
     const lastUpdateDate = sessionState?.updatedAt || existingSession.updatedAt;
     const lastUpdate = lastUpdateDate ? new Date(lastUpdateDate).getTime() : null;

@@ -2,6 +2,37 @@
 
 use Illuminate\Support\Facades\Facade;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\Str;
+
+$normalizeBackendUrl = static function (?string $value): ?string {
+    if (!$value) {
+        return null;
+    }
+
+    $normalized = rtrim(trim($value), '/');
+
+    if ($normalized === '') {
+        return null;
+    }
+
+    if (Str::endsWith($normalized, '/api')) {
+        $normalized = rtrim(Str::substr($normalized, 0, -4), '/');
+    }
+
+    return $normalized;
+};
+
+$whatsappApiUrl = $normalizeBackendUrl(env('WHATSAPP_API_URL'));
+
+$backendBaseUrl = $normalizeBackendUrl(env('BACKEND_URL'))
+    ?? $whatsappApiUrl
+    ?? 'http://localhost:3000';
+
+$backendInternalBaseUrl = $normalizeBackendUrl(env('BACKEND_INTERNAL_URL'))
+    ?? $backendBaseUrl;
+
+$backendApiUrl = rtrim($backendBaseUrl, '/') . '/api';
+$backendInternalApiUrl = rtrim($backendInternalBaseUrl, '/') . '/api';
 
 return [
 
@@ -59,7 +90,10 @@ return [
 
     'asset_url' => env('ASSET_URL'),
 
-    'backend_url' => env('BACKEND_URL', 'http://localhost:3000'),
+    'backend_url' => $backendBaseUrl,
+    'backend_internal_url' => $backendInternalBaseUrl,
+    'backend_api_url' => rtrim($backendApiUrl, '/'),
+    'backend_internal_api_url' => rtrim($backendInternalApiUrl, '/'),
 
     /*
     |--------------------------------------------------------------------------

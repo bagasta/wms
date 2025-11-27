@@ -205,6 +205,10 @@ async function initializeSession(sessionId) {
       // Disable web version caching to avoid LocalWebCache.persist errors when sessions are stopped mid-initialization
       webVersionCache: {
         type: 'none'
+      },
+      // Explicitly disable legacy LocalWebCache to prevent null persist errors
+      webCache: {
+        type: 'none'
       }
     });
 

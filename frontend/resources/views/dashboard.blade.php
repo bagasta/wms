@@ -587,7 +587,7 @@
     </style>
 
     <script>
-        const backendApiBase = @json(config('app.backend_url') . '/api');
+        const backendApiBase = @json(rtrim(config('app.backend_api_url'), '/'));
 
         const chatState = {
             isOpen: false,
@@ -1469,6 +1469,7 @@
         }
 
         let qrInterval;
+        const cachedQrCodes = {};
 
         function showQrModal(sessionId) {
             clearInterval(qrInterval);
@@ -1489,16 +1490,22 @@
                     .then(response => response.json())
                     .then(data => {
                         if (data.qr_code) {
+                            cachedQrCodes[sessionId] = data.qr_code;
                             document.getElementById('qrCodeContainer').innerHTML =
                                 `<img src="${data.qr_code}" alt="QR Code" class="w-48 h-48 md:w-64 md:h-64 mx-auto">`;
+                        } else if (cachedQrCodes[sessionId]) {
+                            document.getElementById('qrCodeContainer').innerHTML =
+                                `<img src="${cachedQrCodes[sessionId]}" alt="QR Code" class="w-48 h-48 md:w-64 md:h-64 mx-auto">`;
                         } else {
                             document.getElementById('qrCodeContainer').innerHTML =
-                                '<div class="w-48 h-48 md:w-64 md:h-64 bg-gray-700 border border-gray-600 rounded-xl mx-auto flex items-center justify-center"><span class="text-gray-400">QR Code not available</span></div>';
+                                '<div class="w-48 h-48 md:w-64 md:h-64 bg-gray-700 border border-gray-600 rounded-xl mx-auto flex items-center justify-center"><span class="text-gray-400">QR Code not available yet</span></div>';
                         }
 
                         if (data.status === 'connected') {
                             clearInterval(qrInterval);
                             location.reload();
+                        } else if (data.status === 'disconnected') {
+                            delete cachedQrCodes[sessionId];
                         }
                     })
                     .catch(error => {

@@ -41,7 +41,7 @@ class DashboardController extends Controller
 
         // Call backend API to create session
         try {
-            $response = Http::post(config('app.backend_url') . '/api/sessions', [
+            $response = Http::post($this->backendApiEndpoint('sessions'), [
                 'session_id' => $session->id,
                 'session_name' => $session->session_name,
                 'webhook_url' => $session->webhook_url,
@@ -73,7 +73,7 @@ class DashboardController extends Controller
 
         // Update backend
         try {
-            Http::put(config('app.backend_url') . '/api/sessions/' . $session->id, [
+            Http::put($this->backendApiEndpoint("sessions/{$session->id}"), [
                 'session_name' => $session->session_name,
                 'webhook_url' => $session->webhook_url,
             ]);
@@ -90,7 +90,7 @@ class DashboardController extends Controller
 
         // Delete from backend first
         try {
-            Http::delete(config('app.backend_url') . '/api/sessions/' . $session->id);
+            Http::delete($this->backendApiEndpoint("sessions/{$session->id}"));
         } catch (\Exception $e) {
             logger()->error('Failed to delete session from backend: ' . $e->getMessage());
         }
@@ -105,7 +105,7 @@ class DashboardController extends Controller
         $this->authorize('view', $session);
 
         try {
-            $response = Http::get(config('app.backend_url') . '/api/sessions/' . $session->id . '/qr');
+            $response = Http::get($this->backendApiEndpoint("sessions/{$session->id}/qr"));
             
             if ($response->successful()) {
                 $payload = $response->json();
@@ -139,7 +139,7 @@ class DashboardController extends Controller
         $this->authorize('update', $session);
 
         try {
-            $response = Http::post(config('app.backend_url') . '/api/sessions/' . $session->id . '/start');
+            $response = Http::post($this->backendApiEndpoint("sessions/{$session->id}/start"));
             
             if ($response->successful()) {
                 $payload = $response->json();
@@ -177,7 +177,7 @@ class DashboardController extends Controller
         $this->authorize('update', $session);
 
         try {
-            $response = Http::post(config('app.backend_url') . '/api/sessions/' . $session->id . '/stop');
+            $response = Http::post($this->backendApiEndpoint("sessions/{$session->id}/stop"));
             
             if ($response->successful()) {
                 $session->update(['status' => 'disconnected']);
@@ -188,5 +188,25 @@ class DashboardController extends Controller
         }
 
         return response()->json(['error' => 'Failed to stop session'], 500);
+    }
+
+    /**
+     * Build a backend API endpoint URL that respects internal routing.
+     */
+    protected function backendApiEndpoint(string $path): string
+    {
+        $baseApiUrl = config('app.backend_internal_api_url')
+            ?? config('app.backend_api_url');
+
+        if (!$baseApiUrl) {
+            $baseUrlFallback = rtrim(config('app.backend_internal_url', config('app.backend_url')), '/');
+            $baseApiUrl = Str::endsWith($baseUrlFallback, '/api')
+                ? $baseUrlFallback
+                : $baseUrlFallback . '/api';
+        }
+
+        $formattedPath = ltrim($path, '/');
+
+        return rtrim($baseApiUrl, '/') . '/' . $formattedPath;
     }
 }
