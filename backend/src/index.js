@@ -67,6 +67,11 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   }
 });
 
+// Global unhandled rejection handler to prevent crashes
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection:', reason);
+});
+
 // Handle graceful shutdown (guard against duplicate registrations)
 const SHUTDOWN_FLAG = Symbol.for('wms_shutdown_handler_registered');
 if (!process[SHUTDOWN_FLAG]) {

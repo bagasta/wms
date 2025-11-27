@@ -526,6 +526,22 @@ async function getSessionQR(req, res, next) {
 
     if (!qrCode) {
       logger.debug(`QR request for session ${sessionId} returned empty QR (status=${statusValue})`);
+
+      // If status shows connected but QR is missing, treat it as needing a fresh auth
+      if (statusValue === 'connected') {
+        logger.info(`Restarting session ${sessionId} because QR is empty while status is connected`);
+        try {
+          await restartSession(sessionId);
+          statusValue = 'connecting';
+          qrCode = null;
+        } catch (restartError) {
+          logger.error(`Failed to restart session ${sessionId} for QR recovery:`, restartError);
+          return res.status(500).json({
+            status: 'error',
+            message: 'Failed to refresh QR code. Please try again.'
+          });
+        }
+      }
     }
 
     res.status(200).json({
