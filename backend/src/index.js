@@ -7,6 +7,7 @@ const sessionRoutes = require('./routes/session.routes');
 const messageRoutes = require('./routes/message.routes');
 const webhookRoutes = require('./routes/webhook.routes');
 const { initializeSessionManager } = require('./services/sessionManager');
+const EventEmitter = require('events');
 
 // Load environment variables
 dotenv.config();
@@ -17,6 +18,9 @@ const PORT = process.env.PORT || 3001;
 
 // Initialize Prisma client
 const prisma = new PrismaClient();
+
+// Avoid MaxListenersExceededWarning when pm2/nodemon hot reloads
+EventEmitter.defaultMaxListeners = Math.max(EventEmitter.defaultMaxListeners || 10, 50);
 
 // Middleware
 app.use(cors());
@@ -63,22 +67,30 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   }
 });
 
-// Handle graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down gracefully');
-  
-  server.close(async () => {
-    logger.info('HTTP server closed');
+// Handle graceful shutdown (guard against duplicate registrations)
+const SHUTDOWN_FLAG = Symbol.for('wms_shutdown_handler_registered');
+if (!process[SHUTDOWN_FLAG]) {
+  process[SHUTDOWN_FLAG] = true;
+
+  const shutdown = async (signal) => {
+    logger.info(`${signal} received, shutting down gracefully`);
     
-    try {
-      await prisma.$disconnect();
-      logger.info('Database connection closed');
-      process.exit(0);
-    } catch (error) {
-      logger.error('Error during shutdown:', error);
-      process.exit(1);
-    }
-  });
-});
+    server.close(async () => {
+      logger.info('HTTP server closed');
+      
+      try {
+        await prisma.$disconnect();
+        logger.info('Database connection closed');
+        process.exit(0);
+      } catch (error) {
+        logger.error('Error during shutdown:', error);
+        process.exit(1);
+      }
+    });
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
 
 module.exports = { app, prisma };

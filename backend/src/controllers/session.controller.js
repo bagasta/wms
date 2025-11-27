@@ -373,9 +373,19 @@ async function startSession(req, res, next) {
       logger.error(`Failed to initialize session ${id} after start:`, initError);
     }
 
+    // Fetch latest state (may still be null while QR is being generated)
+    const sessionState = await prisma.session.findUnique({
+      where: { id: parseInt(id) },
+      select: { status: true, qrCode: true }
+    });
+
     res.status(200).json({
       status: 'success',
-      message: `Session ${id} started successfully`
+      message: `Session ${id} started successfully`,
+      data: {
+        status: sessionState?.status || 'connecting',
+        qr_code: sessionState?.qrCode || null
+      }
     });
   } catch (error) {
     logger.error(`Error starting session ${req.params.id}:`, error);
@@ -509,6 +519,10 @@ async function getSessionQR(req, res, next) {
 
       qrCode = refreshedState?.qrCode || null;
       statusValue = refreshedState?.status || 'connecting';
+    }
+
+    if (!qrCode) {
+      logger.debug(`QR request for session ${sessionId} returned empty QR (status=${statusValue})`);
     }
 
     res.status(200).json({

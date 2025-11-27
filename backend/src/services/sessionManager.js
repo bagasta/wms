@@ -378,6 +378,11 @@ async function initializeSession(sessionId) {
       qrCode: null
     });
     
+    const runtime = sessions.get(sessionId);
+    if (runtime?.client) {
+      await safeDestroyClient(sessionId, runtime.client);
+    }
+    
     throw error;
   }
 }

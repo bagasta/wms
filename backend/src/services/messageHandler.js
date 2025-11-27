@@ -651,9 +651,33 @@ async function sendMessage(sessionId, to, content, options = {}) {
       webhookSent: false
     };
 
-    const savedMessage = await prisma.message.create({
-      data: messageData
-    });
+    let savedMessage;
+    try {
+      savedMessage = await prisma.message.create({
+        data: messageData
+      });
+    } catch (createError) {
+      if (createError?.code === 'P2002') {
+        logger.warn(
+          `Duplicate outbound message detected for session ${sessionId}, message ${msg.id.id}; returning existing record`
+        );
+
+        savedMessage = await prisma.message.findUnique({
+          where: {
+            sessionId_messageId: {
+              sessionId,
+              messageId: msg.id.id
+            }
+          }
+        });
+
+        if (!savedMessage) {
+          throw createError;
+        }
+      } else {
+        throw createError;
+      }
+    }
 
     logger.info(
       `Message ${savedMessage.id} sent from session ${sessionId} to ${chatId}`
