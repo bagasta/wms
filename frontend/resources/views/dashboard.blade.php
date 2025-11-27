@@ -80,7 +80,7 @@
                                                 @endif
                                             </td>
                                             <td class="py-5">
-                                                <span class="px-3 py-1 rounded-full text-sm font-medium
+                                                <span id="session-status-{{ $session->id }}" class="px-3 py-1 rounded-full text-sm font-medium
                                                     @if($session->status === 'connected') bg-green-600/20 text-green-400 border border-green-600/50
                                                     @elseif($session->status === 'connecting') bg-yellow-600/20 text-yellow-400 border border-yellow-600/50
                                                     @else bg-red-600/20 text-red-400 border border-red-600/50
@@ -89,7 +89,7 @@
                                                 </span>
                                             </td>
                                             <td class="py-5">
-                                                <div class="flex gap-2 justify-end">
+                                                <div id="session-actions-{{ $session->id }}" class="flex gap-2 justify-end">
                                                     @if($session->status === 'disconnected')
                                                         <button onclick="startSession({{ $session->id }})"
                                                                 class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 hover:shadow-lg flex items-center gap-2">
@@ -165,7 +165,7 @@
                                         <div class="flex-1 min-w-0">
                                             <h4 class="text-orange-400 font-semibold text-lg truncate">{{ $session->session_name }}</h4>
                                             <div class="mt-2">
-                                                <span class="px-3 py-1 rounded-full text-xs font-medium
+                                                <span id="session-status-mobile-{{ $session->id }}" class="px-3 py-1 rounded-full text-xs font-medium
                                                     @if($session->status === 'connected') bg-green-600/20 text-green-400 border border-green-600/50
                                                     @elseif($session->status === 'connecting') bg-yellow-600/20 text-yellow-400 border border-yellow-600/50
                                                     @else bg-red-600/20 text-red-400 border border-red-600/50
@@ -185,7 +185,7 @@
                                         @endif
                                     </div>
 
-                                    <div class="flex flex-wrap gap-2">
+                                    <div id="session-actions-mobile-{{ $session->id }}" class="flex flex-wrap gap-2">
                                         @if($session->status === 'disconnected')
                                             <button onclick="startSession({{ $session->id }})"
                                                     class="flex-1 bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 hover:scale-105 flex items-center justify-center gap-1 min-w-[80px]">
@@ -1530,7 +1530,10 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    location.reload();
+                    // Optimistically set status to connecting and render QR/Stop buttons, then open modal
+                    setSessionStatus(sessionId, 'connecting');
+                    renderConnectingActions(sessionId);
+                    showQrModal(sessionId);
                 } else {
                     alert('Failed to start session');
                 }
@@ -1539,6 +1542,71 @@
                 console.error('Error:', error);
                 alert('Failed to start session');
             });
+        }
+
+        function setSessionStatus(sessionId, status) {
+            const desktopBadge = document.getElementById(`session-status-${sessionId}`);
+            const mobileBadge = document.getElementById(`session-status-mobile-${sessionId}`);
+
+            const updateBadge = (el) => {
+                if (!el) return;
+                el.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+                el.classList.remove('bg-green-600/20', 'text-green-400', 'border-green-600/50', 'bg-yellow-600/20', 'text-yellow-400', 'border-yellow-600/50', 'bg-red-600/20', 'text-red-400', 'border-red-600/50');
+                if (status === 'connected') {
+                    el.classList.add('bg-green-600/20', 'text-green-400', 'border-green-600/50');
+                } else if (status === 'connecting') {
+                    el.classList.add('bg-yellow-600/20', 'text-yellow-400', 'border-yellow-600/50');
+                } else {
+                    el.classList.add('bg-red-600/20', 'text-red-400', 'border-red-600/50');
+                }
+            };
+
+            updateBadge(desktopBadge);
+            updateBadge(mobileBadge);
+        }
+
+        function renderConnectingActions(sessionId) {
+            const desktopActions = document.getElementById(`session-actions-${sessionId}`);
+            const mobileActions = document.getElementById(`session-actions-mobile-${sessionId}`);
+
+            const desktopHtml = `
+                <button onclick="showQrModal(${sessionId})"
+                        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 hover:shadow-lg flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z"></path>
+                    </svg>
+                    QR
+                </button>
+                <button onclick="stopSession(${sessionId})"
+                        class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 hover:shadow-lg flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>
+                    </svg>
+                    Stop
+                </button>
+            `;
+
+            const mobileHtml = `
+                <button onclick="showQrModal(${sessionId})"
+                        class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 hover:scale-105 flex items-center justify-center gap-1 min-w-[60px]">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z"></path>
+                    </svg>
+                    QR
+                </button>
+                <button onclick="stopSession(${sessionId})"
+                        class="flex-1 bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 hover:scale-105 flex items-center justify-center gap-1 min-w-[60px]">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>
+                    </svg>
+                    Stop
+                </button>
+            `;
+
+            if (desktopActions) desktopActions.innerHTML = desktopHtml;
+            if (mobileActions) mobileActions.innerHTML = mobileHtml;
         }
 
         function stopSession(sessionId) {
