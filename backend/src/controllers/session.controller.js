@@ -399,13 +399,17 @@ async function stopSession(req, res, next) {
     }
 
     // Close session
-    await closeSession(parseInt(id));
+    const closed = await closeSession(parseInt(id));
 
-    logger.info(`Session ${id} stopped`);
+    const message = closed
+      ? `Session ${id} stopped successfully`
+      : `Session ${id} was not active; marked as disconnected`;
+
+    logger.info(message);
 
     res.status(200).json({
       status: 'success',
-      message: `Session ${id} stopped successfully`
+      message
     });
   } catch (error) {
     logger.error(`Error stopping session ${req.params.id}:`, error);

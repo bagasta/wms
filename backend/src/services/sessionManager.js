@@ -183,6 +183,10 @@ async function initializeSession(sessionId) {
       }),
       puppeteer: {
         args: ['--no-sandbox', '--disable-setuid-sandbox']
+      },
+      // Disable web version caching to avoid LocalWebCache.persist errors when sessions are stopped mid-initialization
+      webVersionCache: {
+        type: 'none'
       }
     });
 
@@ -421,7 +425,22 @@ async function closeSession(sessionId) {
   try {
     const session = sessions.get(sessionId);
     if (!session) {
-      logger.warn(`Session ${sessionId} not found, cannot close`);
+      logger.warn(`Session ${sessionId} not found in memory; marking as disconnected`);
+
+      await prisma.session.update({
+        where: { id: sessionId },
+        data: {
+          status: 'disconnected',
+          qrCode: null
+        }
+      });
+
+      try {
+        await removeSessionAuthData(sessionId);
+      } catch (cleanupError) {
+        logger.warn(`Failed to clean up auth data for missing session ${sessionId}:`, cleanupError);
+      }
+
       return false;
     }
 
