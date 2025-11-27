@@ -115,6 +115,18 @@ async function processIncomingMessage(sessionId, msg, isMention = false) {
         `Message ${msg.id.id} already recorded for session ${sessionId}, skipping duplicate save`
       );
 
+      if (shouldSendWebhook && !existingMessage.webhookSent) {
+        try {
+          await sendToWebhook(session, existingMessage);
+          logger.info(`Webhook re-sent for previously saved message ${existingMessage.id}`);
+        } catch (error) {
+          logger.error(
+            `Failed to resend webhook for existing message ${existingMessage.id}:`,
+            error
+          );
+        }
+      }
+
       return existingMessage;
     }
 
