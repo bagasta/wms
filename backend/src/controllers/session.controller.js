@@ -366,6 +366,13 @@ async function startSession(req, res, next) {
 
     logger.info(`Session ${id} started`);
 
+    // Kick off session initialization immediately so QR is generated without waiting for /qr polling
+    try {
+      await initializeSession(parseInt(id));
+    } catch (initError) {
+      logger.error(`Failed to initialize session ${id} after start:`, initError);
+    }
+
     res.status(200).json({
       status: 'success',
       message: `Session ${id} started successfully`
@@ -452,7 +459,15 @@ async function getSessionQR(req, res, next) {
 
     // If session is not initialized, initialize it
     if (!session) {
-      await initializeSession(sessionId);
+      try {
+        await initializeSession(sessionId);
+      } catch (initError) {
+        logger.error(`Failed to initialize session ${sessionId} while fetching QR:`, initError);
+        return res.status(500).json({
+          status: 'error',
+          message: 'Failed to initialize WhatsApp session for QR. Please retry.'
+        });
+      }
     }
 
     // Get QR code from database (it's updated by the session manager)

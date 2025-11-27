@@ -107,7 +107,7 @@ async function initializeSessionManager() {
     // Get all sessions that should be actively connected
     const activeSessions = await prisma.session.findMany({
       where: {
-        status: 'connected'
+        status: { in: ['connected', 'connecting'] }
       }
     });
 
