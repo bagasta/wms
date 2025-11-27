@@ -120,6 +120,12 @@ class DashboardController extends Controller
                     'qr_code' => $session->qr_code,
                     'status' => $session->status,
                 ]);
+            } else {
+                logger()->error('QR fetch failed from backend', [
+                    'session_id' => $session->id,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
             }
         } catch (\Exception $e) {
             logger()->error('Failed to get QR code: ' . $e->getMessage());
@@ -138,13 +144,26 @@ class DashboardController extends Controller
             if ($response->successful()) {
                 $payload = $response->json();
                 $message = $payload['message'] ?? '';
+                $qrCode = data_get($payload, 'data.qr_code');
+                $status = data_get($payload, 'data.status');
                 $isAlreadyConnected = Str::contains(Str::lower($message), 'already connected');
 
                 $session->update([
-                    'status' => $isAlreadyConnected ? 'connected' : 'connecting'
+                    'status' => $isAlreadyConnected ? 'connected' : ($status ?? 'connecting'),
+                    'qr_code' => $qrCode ?? $session->qr_code,
                 ]);
 
-                return response()->json(['success' => true]);
+                return response()->json([
+                    'success' => true,
+                    'status' => $session->status,
+                    'qr_code' => $session->qr_code,
+                ]);
+            } else {
+                logger()->error('Start session failed from backend', [
+                    'session_id' => $session->id,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
             }
         } catch (\Exception $e) {
             logger()->error('Failed to start session: ' . $e->getMessage());
