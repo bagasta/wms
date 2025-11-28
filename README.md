@@ -165,6 +165,9 @@ To receive messages in your external system:
 1. Configure a webhook URL when creating or editing a session
 2. Ensure your webhook endpoint can receive POST requests
 3. Process the incoming JSON payload in your application
+4. (Optional) Tune webhook timeout behaviour with environment variables:
+   - `WEBHOOK_TIMEOUT_MS`: how long the backend waits for the webhook before giving up. Leave unset/empty to wait indefinitely, or set to a specific number of milliseconds (e.g. `60000`).
+   - `WEBHOOK_SLOW_RESPONSE_MS`: threshold (ms) for logging a warning when a webhook takes too long. Defaults to 10s or `WEBHOOK_TIMEOUT_MS - 1s`.
 
 ## API Documentation
 
@@ -208,4 +211,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Laravel](https://laravel.com/)
 - [WhatsApp WebJS](https://github.com/pedroslopez/whatsapp-web.js/)
 - [WAHA Plus](https://waha.devlike.pro/docs/overview/quick-start/)
-

@@ -8,7 +8,16 @@ const logger = require('../utils/logger');
 
 const prisma = new PrismaClient();
 const DEFAULT_TYPING_DURATION_MS = 1200;
-const DEFAULT_WEBHOOK_TIMEOUT_MS = parseInt(process.env.WEBHOOK_TIMEOUT_MS || '8000', 10);
+const FALLBACK_WEBHOOK_TIMEOUT_MS = null;
+const WEBHOOK_TIMEOUT_MS = resolveWebhookTimeout(
+  process.env.WEBHOOK_TIMEOUT_MS,
+  FALLBACK_WEBHOOK_TIMEOUT_MS
+);
+const WEBHOOK_SLOW_RESPONSE_MS = resolveSlowResponseThreshold(
+  process.env.WEBHOOK_SLOW_RESPONSE_MS,
+  WEBHOOK_TIMEOUT_MS
+);
+const sendQueues = new Map(); // sessionId -> Promise chain for outbound sends
 
 function isContactMethodsMissing(error) {
   const message = error?.message || '';
@@ -394,107 +403,10 @@ async function sendToWebhook(session, message, media = null) {
     };
 
     // Send to session webhook if configured
-    if (session.webhookUrl) {
-      try {
-        logger.info(`Sending webhook for message ${message.id} to ${session.webhookUrl}`);
+    const webhookTargets = buildWebhookTargets(session);
 
-        const response = await axios.post(session.webhookUrl, payload, {
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'WhatsApp-Management-System/1.0'
-          },
-          timeout: DEFAULT_WEBHOOK_TIMEOUT_MS
-        });
-
-        logger.info(`Webhook sent for message ${message.id} to ${session.webhookUrl}, status: ${response.status}`);
-
-        // Update message as webhook sent
-        await prisma.message.update({
-          where: { id: message.id },
-          data: { webhookSent: true }
-        });
-
-        // If webhook returns replies, send them back to the original sender
-        if (response.data) {
-          const replies = extractReplies(response.data);
-          for (const reply of replies) {
-            const to = resolveReplyTarget(message, reply.to);
-            if (!to) {
-              logger.debug(
-                `Skipping auto-reply for message ${message.id} because the target could not be determined`
-              );
-              continue;
-            }
-            try {
-              await sendMessage(session.id, to, reply.content);
-              logger.info(
-                `Auto-reply sent for message ${message.id} to ${to}`
-              );
-            } catch (replyError) {
-              logger.error(
-                `Error sending auto-reply for message ${message.id}:`,
-                replyError
-              );
-            }
-          }
-        }
-      } catch (error) {
-        logAxiosFailure(
-          `Error sending webhook for message ${message.id} to ${session.webhookUrl}`,
-          error
-        );
-      }
-    }
-
-    // Send to additional webhooks if configured
-    if (session.webhooks && session.webhooks.length > 0) {
-      for (const webhook of session.webhooks) {
-        try {
-          logger.info(`Sending webhook for message ${message.id} to ${webhook.url}`);
-
-          const response = await axios.post(webhook.url, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'User-Agent': 'WhatsApp-Management-System/1.0',
-              ...(webhook.secret ? { 'X-Webhook-Secret': webhook.secret } : {})
-            },
-            timeout: DEFAULT_WEBHOOK_TIMEOUT_MS
-          });
-
-          logger.info(
-            `Webhook sent for message ${message.id} to ${webhook.url}, status: ${response.status}`
-          );
-
-          if (response.data) {
-            const replies = extractReplies(response.data);
-            for (const reply of replies) {
-              const to = resolveReplyTarget(message, reply.to);
-              if (!to) {
-                logger.debug(
-                  `Skipping auto-reply for message ${message.id} because the target could not be determined`
-                );
-                continue;
-              }
-              try {
-                await sendMessage(session.id, to, reply.content);
-                logger.info(
-                  `Auto-reply sent for message ${message.id} to ${to}`
-                );
-              } catch (replyError) {
-                logger.error(
-                  `Error sending auto-reply for message ${message.id}:`,
-                  replyError
-                );
-              }
-            }
-          }
-        } catch (error) {
-          logAxiosFailure(
-            `Error sending webhook for message ${message.id} to ${webhook.url}`,
-            error
-          );
-        }
-      }
+    for (const target of webhookTargets) {
+      await dispatchWebhookTarget(target, payload, message, session.id);
     }
   } catch (error) {
     logger.error(`Error sending webhook for message ${message.id}:`, error);
@@ -511,6 +423,12 @@ async function sendToWebhook(session, message, media = null) {
  * @returns {Promise<object>} - The sent message
  */
 async function sendMessage(sessionId, to, content, options = {}) {
+  return enqueueSendOperation(sessionId, () =>
+    executeSendMessage(sessionId, to, content, options)
+  );
+}
+
+async function executeSendMessage(sessionId, to, content, options = {}) {
   try {
     const { getSession } = require('./sessionManager');
     const session = getSession(sessionId);
@@ -524,166 +442,181 @@ async function sendMessage(sessionId, to, content, options = {}) {
       throw new Error(`Invalid recipient format for ${to}`);
     }
 
-    // Determine chat ID and validate recipient when needed
+    const digitsForLookup = normalizedRecipient.digits;
     let chatId = normalizedRecipient.value;
+
     if (!normalizedRecipient.isChatId) {
-      const numberId = await session.client.getNumberId(chatId);
-      if (!numberId) {
+      const resolved = await resolveChatIdFromDigits(session.client, chatId);
+      if (!resolved) {
         throw new Error(`Invalid WhatsApp ID for recipient ${to}`);
       }
-      chatId = numberId._serialized;
+      chatId = resolved;
     }
 
     const mediaOptions = options.media;
-    let outboundContent = typeof content === 'string' ? content : '';
-    let msg;
+    const baseContent = typeof content === 'string' ? content : '';
 
-    let chatInstance = null;
-    try {
-      chatInstance = await session.client.getChatById(chatId);
-    } catch (error) {
-      logger.warn(`Unable to load chat ${chatId} before sending message:`, error);
-    }
+    const sendToChatId = async (targetChatId) => {
+      let outboundContent = baseContent;
+      let chatInstance = null;
 
-    if (chatInstance) {
       try {
-        await chatInstance.sendStateTyping();
-        const typingDelay = typeof options.typingDuration === 'number'
-          ? Math.max(0, Math.min(options.typingDuration, 5000))
-          : DEFAULT_TYPING_DURATION_MS;
-        if (typingDelay > 0) {
-          await new Promise((resolve) => setTimeout(resolve, typingDelay));
-        }
+        chatInstance = await session.client.getChatById(targetChatId);
       } catch (error) {
-        logger.warn(`Unable to send typing state for chat ${chatId}:`, error);
-      }
-    }
-
-    if (mediaOptions) {
-      const {
-        type,
-        url = null,
-        data = null,
-        mimetype = null,
-        filename = null,
-        caption = null
-      } = mediaOptions;
-
-      if (!type || type !== 'image') {
-        throw new Error(`Unsupported media type: ${type || 'undefined'}`);
-      }
-
-      let mediaPayload;
-
-      if (data) {
-        if (!mimetype) {
-          throw new Error('Media mimetype is required when providing base64 data');
+        if (isLidResolutionError(error)) {
+          logger.warn(
+            `Unable to load chat ${targetChatId} before sending message because WhatsApp has not provided a LID yet`
+          );
+        } else {
+          logger.warn(`Unable to load chat ${targetChatId} before sending message:`, error);
         }
-
-        const inferredFilename = filename || `media.${inferExtensionFromMime(mimetype)}`;
-        const normalizedData = stripBase64Prefix(data);
-        mediaPayload = new MessageMedia(mimetype, normalizedData, inferredFilename);
-      } else if (url) {
-        mediaPayload = await MessageMedia.fromUrl(url, { unsafeMime: true });
-      } else {
-        throw new Error('Media payload must include either a url or base64 data field');
       }
 
-      const mediaCaption = typeof caption === 'string' && caption.trim() !== ''
-        ? caption
-        : outboundContent;
-
-      msg = await session.client.sendMessage(chatId, mediaPayload, {
-        caption: mediaCaption ? mediaCaption : undefined
-      });
-
-      outboundContent = (msg && typeof msg.body === 'string' && msg.body.trim() !== '')
-        ? msg.body
-        : (mediaCaption || '');
-    } else {
-      if (typeof outboundContent !== 'string' || outboundContent.trim() === '') {
-        throw new Error('Message content is required for text messages');
-      }
-
-      msg = await session.client.sendMessage(chatId, outboundContent);
-    }
-
-    let chat = chatInstance;
-    let contact = null;
-
-    if (!chat) {
-      try {
-        chat = await msg.getChat();
-      } catch (error) {
-        logger.warn(`Unable to load chat info for outbound message ${msg.id.id}:`, error);
-      }
-    }
-
-    try {
-      contact = await msg.getContact();
-    } catch (error) {
-      if (isContactMethodsMissing(error)) {
-        logger.debug(
-          `Skipping contact lookup for outbound message ${msg.id.id} because ContactMethods API changed; proceeding without contact metadata`
-        );
-      } else {
-        logger.warn(`Unable to load contact info for outbound message ${msg.id.id}:`, error);
-      }
-    }
-
-    const persistedGroupId = chat && chat.isGroup ? chat.id._serialized : null;
-    const chatName = resolveChatDisplayName(chat, contact);
-    const contactName = resolveContactDisplayName(contact);
-
-    const messageData = {
-      sessionId,
-      messageId: msg.id.id,
-      fromNumber: msg.from,
-      toNumber: msg.to,
-      contactName,
-      groupId: persistedGroupId,
-      chatName,
-      author: msg.author || null,
-      fromMe: true,
-      messageType: msg.type || (mediaOptions ? mediaOptions.type : 'chat'),
-      content: outboundContent,
-      timestamp: msg.timestamp ? new Date(msg.timestamp * 1000) : new Date(),
-      webhookSent: false
-    };
-
-    let savedMessage;
-    try {
-      savedMessage = await prisma.message.create({
-        data: messageData
-      });
-    } catch (createError) {
-      if (createError?.code === 'P2002') {
-        logger.warn(
-          `Duplicate outbound message detected for session ${sessionId}, message ${msg.id.id}; returning existing record`
-        );
-
-        savedMessage = await prisma.message.findUnique({
-          where: {
-            sessionId_messageId: {
-              sessionId,
-              messageId: msg.id.id
-            }
+      if (chatInstance) {
+        try {
+          await chatInstance.sendStateTyping();
+          const typingDelay = typeof options.typingDuration === 'number'
+            ? Math.max(0, Math.min(options.typingDuration, 5000))
+            : DEFAULT_TYPING_DURATION_MS;
+          if (typingDelay > 0) {
+            await new Promise((resolve) => setTimeout(resolve, typingDelay));
           }
+        } catch (error) {
+          logger.warn(`Unable to send typing state for chat ${targetChatId}:`, error);
+        }
+      }
+
+      let msg;
+
+      if (mediaOptions) {
+        const {
+          type,
+          url = null,
+          data = null,
+          mimetype = null,
+          filename = null,
+          caption = null
+        } = mediaOptions;
+
+        if (!type || type !== 'image') {
+          throw new Error(`Unsupported media type: ${type || 'undefined'}`);
+        }
+
+        let mediaPayload;
+
+        if (data) {
+          if (!mimetype) {
+            throw new Error('Media mimetype is required when providing base64 data');
+          }
+
+          const inferredFilename = filename || `media.${inferExtensionFromMime(mimetype)}`;
+          const normalizedData = stripBase64Prefix(data);
+          mediaPayload = new MessageMedia(mimetype, normalizedData, inferredFilename);
+        } else if (url) {
+          mediaPayload = await MessageMedia.fromUrl(url, { unsafeMime: true });
+        } else {
+          throw new Error('Media payload must include either a url or base64 data field');
+        }
+
+        const mediaCaption = typeof caption === 'string' && caption.trim() !== ''
+          ? caption
+          : outboundContent;
+
+        msg = await session.client.sendMessage(targetChatId, mediaPayload, {
+          caption: mediaCaption ? mediaCaption : undefined
         });
 
-        if (!savedMessage) {
-          throw createError;
-        }
+        outboundContent = (msg && typeof msg.body === 'string' && msg.body.trim() !== '')
+          ? msg.body
+          : (mediaCaption || '');
       } else {
-        throw createError;
+        if (typeof outboundContent !== 'string' || outboundContent.trim() === '') {
+          throw new Error('Message content is required for text messages');
+        }
+
+        msg = await session.client.sendMessage(targetChatId, outboundContent);
       }
+
+      let chat = chatInstance;
+      let contact = null;
+
+      if (!chat) {
+        try {
+          chat = await msg.getChat();
+        } catch (error) {
+          logger.warn(`Unable to load chat info for outbound message ${msg.id.id}:`, error);
+        }
+      }
+
+      try {
+        contact = await msg.getContact();
+      } catch (error) {
+        if (isContactMethodsMissing(error)) {
+          logger.debug(
+            `Skipping contact lookup for outbound message ${msg.id.id} because ContactMethods API changed; proceeding without contact metadata`
+          );
+        } else {
+          logger.warn(`Unable to load contact info for outbound message ${msg.id.id}:`, error);
+        }
+      }
+
+      const persistedGroupId = chat && chat.isGroup ? chat.id._serialized : null;
+      const chatName = resolveChatDisplayName(chat, contact);
+      const contactName = resolveContactDisplayName(contact);
+
+      const messageData = {
+        sessionId,
+        messageId: msg.id.id,
+        fromNumber: msg.from,
+        toNumber: msg.to,
+        contactName,
+        groupId: persistedGroupId,
+        chatName,
+        author: msg.author || null,
+        fromMe: true,
+        messageType: msg.type || (mediaOptions ? mediaOptions.type : 'chat'),
+        content: outboundContent,
+        timestamp: msg.timestamp ? new Date(msg.timestamp * 1000) : new Date(),
+        webhookSent: false
+      };
+
+      const savedMessage = await prisma.message.upsert({
+        where: {
+          sessionId_messageId: {
+            sessionId,
+            messageId: msg.id.id
+          }
+        },
+        create: messageData,
+        update: {
+          content: messageData.content,
+          messageType: messageData.messageType,
+          timestamp: messageData.timestamp,
+          contactName: messageData.contactName
+        }
+      });
+
+      logger.info(
+        `Message ${savedMessage.id} sent from session ${sessionId} to ${targetChatId}`
+      );
+
+      return savedMessage;
+    };
+
+    try {
+      return await sendToChatId(chatId);
+    } catch (error) {
+      if (isLidResolutionError(error) && digitsForLookup) {
+        const resolvedChatId = await resolveChatIdFromDigits(session.client, digitsForLookup);
+        if (resolvedChatId && resolvedChatId !== chatId) {
+          logger.warn(
+            `Retrying message for session ${sessionId} using WhatsApp-resolved chat ID ${resolvedChatId} after LID error`
+          );
+          return await sendToChatId(resolvedChatId);
+        }
+      }
+      throw error;
     }
-
-    logger.info(
-      `Message ${savedMessage.id} sent from session ${sessionId} to ${chatId}`
-    );
-
-    return savedMessage;
   } catch (error) {
     logger.error(`Error sending message from session ${sessionId} to ${to}:`, error);
     throw error;
@@ -736,22 +669,245 @@ function normalizeRecipientId(rawTo) {
   }
 
   const lower = trimmed.toLowerCase();
+  const digits = extractDigits(trimmed);
 
   if (lower.endsWith('@g.us') || lower.endsWith('@c.us')) {
-    return { value: trimmed, isChatId: true };
+    return { value: trimmed, isChatId: true, digits };
   }
 
   if (lower.endsWith('@s.whatsapp.net')) {
-    return { value: trimmed.replace(/@s\.whatsapp\.net$/i, '@c.us'), isChatId: true };
+    const normalized = trimmed.replace(/@s\.whatsapp\.net$/i, '@c.us');
+    return { value: normalized, isChatId: true, digits: extractDigits(normalized) };
   }
 
   if (lower.endsWith('@lid')) {
-    const digits = trimmed.replace(/@lid$/i, '').replace(/[^\d]/g, '');
-    return digits ? { value: digits, isChatId: false } : null;
+    return {
+      value: trimmed,
+      isChatId: true,
+      digits,
+      rawIsLid: true
+    };
   }
 
-  const digitsOnly = trimmed.replace(/[^\d]/g, '');
-  return digitsOnly ? { value: digitsOnly, isChatId: false } : null;
+  return digits ? { value: digits, isChatId: false, digits } : null;
+}
+
+function enqueueSendOperation(sessionId, operation) {
+  const previous = sendQueues.get(sessionId) || Promise.resolve();
+
+  const nextOperation = previous
+    .catch((error) => {
+      if (error) {
+        logger.warn(
+          `Previous send operation for session ${sessionId} failed:`,
+          error?.message || error
+        );
+      }
+    })
+    .then(operation);
+
+  sendQueues.set(sessionId, nextOperation);
+
+  return nextOperation.finally(() => {
+    if (sendQueues.get(sessionId) === nextOperation) {
+      sendQueues.delete(sessionId);
+    }
+  });
+}
+
+async function resolveChatIdFromDigits(client, digits) {
+  if (!client || !digits) {
+    return null;
+  }
+
+  try {
+    const numberId = await client.getNumberId(digits);
+    if (numberId && numberId._serialized) {
+      return numberId._serialized;
+    }
+    return null;
+  } catch (error) {
+    if (isLidResolutionError(error)) {
+      return `${digits}@c.us`;
+    }
+    throw error;
+  }
+}
+
+function isLidResolutionError(error) {
+  const message = error?.message || '';
+  return (
+    message.includes('No LID for user') ||
+    message.includes('toUserLidOrThrow')
+  );
+}
+
+function extractDigits(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const digits = value.replace(/[^\d]/g, '');
+  return digits || null;
+}
+
+function resolveWebhookTimeout(rawValue, fallbackValue) {
+  if (typeof rawValue === 'string' && rawValue.trim() !== '') {
+    const parsed = parseInt(rawValue, 10);
+    if (!Number.isNaN(parsed)) {
+      if (parsed <= 0) {
+        return null;
+      }
+
+      return parsed;
+    }
+  }
+
+  return fallbackValue;
+}
+
+function resolveSlowResponseThreshold(rawValue, timeoutMs) {
+  if (typeof rawValue === 'string' && rawValue.trim() !== '') {
+    const parsed = parseInt(rawValue, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+    return Math.max(1000, Math.min(timeoutMs - 1000, 10000));
+  }
+
+  return 10000;
+}
+
+function buildWebhookTargets(session) {
+  const targets = [];
+
+  if (session.webhookUrl) {
+    targets.push({
+      url: session.webhookUrl,
+      headers: {},
+      label: 'session webhook'
+    });
+  }
+
+  if (session.webhooks && session.webhooks.length > 0) {
+    for (const webhook of session.webhooks) {
+      targets.push({
+        url: webhook.url,
+        headers: webhook.secret ? { 'X-Webhook-Secret': webhook.secret } : {},
+        label: `webhook ${webhook.id}`
+      });
+    }
+  }
+
+  return targets;
+}
+
+function buildWebhookRequestConfig(additionalHeaders = {}) {
+  const config = {
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'WhatsApp-Management-System/1.0',
+      ...additionalHeaders
+    }
+  };
+
+  if (WEBHOOK_TIMEOUT_MS !== null) {
+    config.timeout = WEBHOOK_TIMEOUT_MS;
+  }
+
+  return config;
+}
+
+function startSlowResponseTimer(targetUrl) {
+  if (!WEBHOOK_SLOW_RESPONSE_MS || WEBHOOK_SLOW_RESPONSE_MS <= 0) {
+    return null;
+  }
+
+  const timer = setTimeout(() => {
+    logger.warn(
+      `Webhook ${targetUrl} is still processing after ${WEBHOOK_SLOW_RESPONSE_MS}ms` +
+      (WEBHOOK_TIMEOUT_MS === null ? '' : ` (timeout at ${WEBHOOK_TIMEOUT_MS}ms)`)
+    );
+  }, WEBHOOK_SLOW_RESPONSE_MS);
+
+  if (typeof timer.unref === 'function') {
+    timer.unref();
+  }
+
+  return timer;
+}
+
+async function markMessageWebhookSent(message) {
+  if (!message || message.webhookSent) {
+    return;
+  }
+
+  try {
+    await prisma.message.update({
+      where: { id: message.id },
+      data: { webhookSent: true }
+    });
+
+    message.webhookSent = true;
+  } catch (error) {
+    logger.warn(`Unable to mark message ${message?.id} as webhook-sent:`, error);
+  }
+}
+
+async function dispatchWebhookTarget(target, payload, message, sessionId) {
+  logger.info(`Sending webhook for message ${message.id} to ${target.url}`);
+
+  const slowTimer = startSlowResponseTimer(target.url);
+
+  try {
+    const response = await axios.post(
+      target.url,
+      payload,
+      buildWebhookRequestConfig(target.headers)
+    );
+
+    logger.info(
+      `Webhook sent for message ${message.id} to ${target.url}, status: ${response.status}`
+    );
+
+    await markMessageWebhookSent(message);
+    await handleWebhookReplies(response.data, message, sessionId);
+  } catch (error) {
+    logAxiosFailure(
+      `Error sending webhook for message ${message.id} to ${target.url}`,
+      error
+    );
+  } finally {
+    if (slowTimer) {
+      clearTimeout(slowTimer);
+    }
+  }
+}
+
+async function handleWebhookReplies(responseData, message, sessionId) {
+  if (!responseData) {
+    return;
+  }
+
+  const replies = extractReplies(responseData);
+  for (const reply of replies) {
+    const to = resolveReplyTarget(message, reply.to);
+    if (!to) {
+      logger.debug(
+        `Skipping auto-reply for message ${message.id} because the target could not be determined`
+      );
+      continue;
+    }
+    try {
+      await sendMessage(sessionId, to, reply.content);
+      logger.info(`Auto-reply sent for message ${message.id} to ${to}`);
+    } catch (replyError) {
+      logger.error(`Error sending auto-reply for message ${message.id}:`, replyError);
+    }
+  }
 }
 
 module.exports = {
