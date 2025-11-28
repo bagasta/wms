@@ -1,8 +1,6 @@
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../utils/prisma');
 const logger = require('../utils/logger');
 const { sendMessage } = require('../services/messageHandler');
-
-const prisma = new PrismaClient();
 
 /**
  * Get messages for a session
@@ -260,7 +258,7 @@ async function sendMessageHandler(req, res, next) {
 async function getMessageById(req, res, next) {
   try {
     const { id } = req.params;
-    
+
     const message = await prisma.message.findUnique({
       where: { id: parseInt(id) }
     });

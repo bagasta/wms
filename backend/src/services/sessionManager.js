@@ -4,13 +4,16 @@ const QRCode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
 const fsPromises = fs.promises;
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../utils/prisma');
 const logger = require('../utils/logger');
 const { processIncomingMessage } = require('./messageHandler');
-
-const prisma = new PrismaClient();
 const sessions = new Map();
 const typingStatus = new Map(); // sessionId -> Map(chatId -> { isTyping, updatedAt })
+const restartTimers = new Map(); // sessionId -> timeout
+const initializingSessions = new Map(); // sessionId -> in-flight init promise
+const restartCounts = new Map(); // sessionId -> count
+const MAX_RESTARTS = 5;
+const RESTART_DELAY_BASE = 5000;
 
 function getSessionTypingMap(sessionId) {
   if (!typingStatus.has(sessionId)) {
@@ -72,6 +75,48 @@ async function safeDestroyClient(sessionId, clientInstance) {
   } finally {
     sessions.delete(sessionId);
     typingStatus.delete(sessionId);
+  }
+}
+
+function scheduleSessionRestart(sessionId, reason, delayMs = 5000) {
+  const currentCount = restartCounts.get(sessionId) || 0;
+
+  if (currentCount >= MAX_RESTARTS) {
+    logger.warn(
+      `Session ${sessionId} reached max restarts (${MAX_RESTARTS}); requires manual start/scan. Last reason: ${reason}`
+    );
+    // Reset count so manual start works fresh, or keep it to prevent immediate loop? 
+    // Better to leave it, manual start should reset it.
+    return;
+  }
+
+  const nextCount = currentCount + 1;
+  restartCounts.set(sessionId, nextCount);
+
+  // Calculate backoff delay: 5s, 10s, 20s, 40s, 80s...
+  const backoffDelay = delayMs * Math.pow(2, currentCount);
+
+  logger.info(
+    `Scheduling restart for session ${sessionId} (attempt ${nextCount}/${MAX_RESTARTS}) in ${backoffDelay}ms. Reason: ${reason}`
+  );
+
+  const timer = setTimeout(() => {
+    restartTimers.delete(sessionId);
+    logger.info(`Executing scheduled restart for session ${sessionId}`);
+    initializeSession(sessionId).catch((err) => {
+      logger.error(`Scheduled restart failed for session ${sessionId}:`, err);
+      // If it failed immediately, it might trigger another restart via error handlers
+    });
+  }, backoffDelay);
+
+  restartTimers.set(sessionId, timer);
+}
+
+function clearSessionRestart(sessionId) {
+  const timer = restartTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    restartTimers.delete(sessionId);
   }
 }
 
@@ -149,137 +194,153 @@ async function initializeSessionManager() {
  * @returns {Promise<object>} - The session object
  */
 async function initializeSession(sessionId) {
-  try {
-    // Check if session already exists
-    if (sessions.has(sessionId)) {
-      logger.info(`Session ${sessionId} already initialized`);
-      return sessions.get(sessionId);
-    }
+  if (sessions.has(sessionId)) {
+    logger.info(`Session ${sessionId} already initialized`);
+    return sessions.get(sessionId);
+  }
 
-    // Get session from database
-    const session = await prisma.session.findUnique({
-      where: { id: sessionId }
-    });
+  if (initializingSessions.has(sessionId)) {
+    logger.info(`Session ${sessionId} is currently initializing; reusing in-flight promise`);
+    return initializingSessions.get(sessionId);
+  }
 
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
-
-    logger.info(`Initializing session ${sessionId} (${session.sessionName})`);
-
-    if (session.status !== 'connected') {
-      await updateSessionRecord(sessionId, {
-        status: 'connecting',
-        qrCode: null
+  const initPromise = (async () => {
+    try {
+      // Get session from database
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId }
       });
-    }
 
-    // Create session directory if it doesn't exist
-    const baseAuthDir = process.env.WWEBJS_DATA_DIR || '.wwebjs_auth';
-    const sessionDir = path.join(baseAuthDir, `session-${sessionId}`);
-    const legacySessionDir = path.join(baseAuthDir, `session-session-${sessionId}`);
-
-    if (fs.existsSync(legacySessionDir)) {
-      try {
-        fs.rmSync(legacySessionDir, { recursive: true, force: true });
-        logger.info(`Removed legacy auth directory ${legacySessionDir} for session ${sessionId}`);
-      } catch (legacyError) {
-        logger.warn(`Unable to remove legacy auth directory ${legacySessionDir} for session ${sessionId}:`, legacyError);
+      if (!session) {
+        throw new Error(`Session ${sessionId} not found`);
       }
-    }
 
-    if (!fs.existsSync(sessionDir)) {
-      fs.mkdirSync(sessionDir, { recursive: true });
-    }
+      logger.info(`Initializing session ${sessionId} (${session.sessionName})`);
 
-    // Create WhatsApp client
-    const client = new Client({
-      authStrategy: new LocalAuth({
-        // Use plain session ID so LocalAuth creates <base>/session-<id>
-        clientId: String(sessionId),
-        dataPath: baseAuthDir
-      }),
-      puppeteer: {
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-      },
-      // Disable web version caching to avoid LocalWebCache.persist errors when sessions are stopped mid-initialization
-      webVersionCache: {
-        type: 'none'
-      },
-      // Explicitly disable legacy LocalWebCache to prevent null persist errors
-      webCache: {
-        type: 'none'
+      if (session.status !== 'connected') {
+        await updateSessionRecord(sessionId, {
+          status: 'connecting',
+          qrCode: null
+        });
       }
-    });
 
-    // Set up event handlers
-    client.on('qr', async (qr) => {
-      // Generate QR code for terminal (for debugging) and log it via Winston
-      qrcode.generate(qr, { small: true }, (asciiQR) => {
-        logger.info(`QR code for session ${sessionId}:\n${asciiQR}`);
+      // Create session directory if it doesn't exist
+      const baseAuthDir = process.env.WWEBJS_DATA_DIR || '.wwebjs_auth';
+      const sessionDir = path.join(baseAuthDir, `session-${sessionId}`);
+      const legacySessionDir = path.join(baseAuthDir, `session-session-${sessionId}`);
+
+      if (fs.existsSync(legacySessionDir)) {
+        try {
+          fs.rmSync(legacySessionDir, { recursive: true, force: true });
+          logger.info(`Removed legacy auth directory ${legacySessionDir} for session ${sessionId}`);
+        } catch (legacyError) {
+          logger.warn(`Unable to remove legacy auth directory ${legacySessionDir} for session ${sessionId}:`, legacyError);
+        }
+      }
+
+      if (!fs.existsSync(sessionDir)) {
+        fs.mkdirSync(sessionDir, { recursive: true });
+      }
+
+      // Create WhatsApp client
+      const client = new Client({
+        authStrategy: new LocalAuth({
+          // Use plain session ID so LocalAuth creates <base>/session-<id>
+          clientId: String(sessionId),
+          dataPath: baseAuthDir
+        }),
+        puppeteer: {
+          args: ['--no-sandbox', '--disable-setuid-sandbox']
+        },
+        // Disable web version caching to avoid LocalWebCache.persist errors when sessions are stopped mid-initialization
+        webVersionCache: {
+          type: 'none'
+        },
+        // Explicitly disable legacy LocalWebCache to prevent null persist errors
+        webCache: {
+          type: 'none'
+        }
       });
-      logger.debug(`QR string for session ${sessionId}: ${qr}`);
 
-      try {
-        // Convert QR string to data URL for dashboard display
-        const qrDataUrl = await QRCode.toDataURL(qr);
+      // Track whether this client instance has been aborted (e.g., invalid QR / forced logout)
+      let aborted = false;
+      const isAborted = () => aborted;
 
-        const updated = await updateSessionRecord(sessionId, {
-          qrCode: qrDataUrl,
-          status: 'connecting'
+      async function abortAndRestart(reason, { clearAuth = false } = {}) {
+        if (aborted) return;
+        aborted = true;
+        clearSessionRestart(sessionId);
+
+        await updateSessionRecord(sessionId, {
+          status: 'disconnected',
+          qrCode: null
         });
 
-        if (!updated) {
-          logger.warn(`Skipping QR persist because session ${sessionId} no longer exists`);
+        try {
           await safeDestroyClient(sessionId, client);
-        } else {
-          logger.info(`QR code generated for session ${sessionId}`);
-          const existing = sessions.get(sessionId);
-          if (existing) {
-            existing.info.qrCode = qrDataUrl;
-            sessions.set(sessionId, existing);
+        } catch (destroyError) {
+          logger.warn(`Failed to destroy client during abort for session ${sessionId}:`, destroyError);
+        }
+
+        if (clearAuth) {
+          try {
+            await removeSessionAuthData(sessionId);
+          } catch (cleanupError) {
+            logger.warn(`Failed to clear auth data for session ${sessionId} during abort (${reason}):`, cleanupError);
           }
         }
-      } catch (error) {
-        logger.error(`Failed to generate QR code for session ${sessionId}:`, error);
-      }
-    });
 
-    client.on('ready', async () => {
-      logger.info(`Session ${sessionId} is ready`);
-      await updateSessionRecord(sessionId, {
-        status: 'connected',
-        qrCode: null,
-        lastSeen: new Date()
+        scheduleSessionRestart(sessionId, reason);
+      }
+
+      // Set up event handlers
+      client.on('qr', async (qr) => {
+        if (isAborted()) return;
+
+        // Generate QR code for terminal (for debugging) and log it via Winston
+        qrcode.generate(qr, { small: true }, (asciiQR) => {
+          logger.info(`QR code for session ${sessionId}:\n${asciiQR}`);
+        });
+        logger.debug(`QR string for session ${sessionId}: ${qr}`);
+
+        // WhatsApp sometimes emits QR payloads with an undefined ref when the session was forcefully logged out.
+        // Skip persisting those and force a clean restart so we don't churn a broken QR.
+        if (typeof qr === 'string' && qr.startsWith('undefined,')) {
+          logger.warn(`Received invalid QR (missing ref) for session ${sessionId}; clearing auth data and restarting`);
+          await abortAndRestart('invalid_qr_ref', { clearAuth: true });
+          return;
+        }
+
+        try {
+          // Convert QR string to data URL for dashboard display
+          const qrDataUrl = await QRCode.toDataURL(qr);
+
+          const updated = await updateSessionRecord(sessionId, {
+            qrCode: qrDataUrl,
+            status: 'connecting'
+          });
+
+          if (!updated) {
+            logger.warn(`Skipping QR persist because session ${sessionId} no longer exists`);
+            await safeDestroyClient(sessionId, client);
+          } else {
+            logger.info(`QR code generated for session ${sessionId}`);
+            const existing = sessions.get(sessionId);
+            if (existing) {
+              existing.info.qrCode = qrDataUrl;
+              sessions.set(sessionId, existing);
+            }
+          }
+        } catch (error) {
+          logger.error(`Failed to generate QR code for session ${sessionId}:`, error);
+        }
       });
 
-      const existing = sessions.get(sessionId);
-      if (existing) {
-        existing.info.status = 'connected';
-        existing.info.lastSeen = new Date();
-      }
-    });
-
-    client.on('authenticated', async () => {
-      logger.info(`Session ${sessionId} authenticated`);
-
-      await updateSessionRecord(sessionId, {
-        status: 'connected',
-        qrCode: null,
-        lastSeen: new Date()
-      });
-
-      const existing = sessions.get(sessionId);
-      if (existing) {
-        existing.info.status = 'connected';
-        existing.info.lastSeen = new Date();
-      }
-    });
-
-    client.on('change_state', async (state) => {
-      logger.info(`Session ${sessionId} state changed to ${state}`);
-
-      if (state === 'CONNECTED') {
+      client.on('ready', async () => {
+        if (isAborted()) return;
+        logger.info(`Session ${sessionId} is ready`);
+        clearSessionRestart(sessionId);
+        restartCounts.delete(sessionId); // Reset restart count on success
         await updateSessionRecord(sessionId, {
           status: 'connected',
           qrCode: null,
@@ -291,114 +352,203 @@ async function initializeSession(sessionId) {
           existing.info.status = 'connected';
           existing.info.lastSeen = new Date();
         }
-      }
-    });
+      });
 
-    client.on('auth_failure', async (msg) => {
-      logger.error(`Session ${sessionId} authentication failed: ${msg}`);
-      
+      client.on('authenticated', async () => {
+        if (isAborted()) return;
+        logger.info(`Session ${sessionId} authenticated`);
+        clearSessionRestart(sessionId);
+        restartCounts.delete(sessionId); // Reset restart count on success
+
+        await updateSessionRecord(sessionId, {
+          status: 'connected',
+          qrCode: null,
+          lastSeen: new Date()
+        });
+
+        const existing = sessions.get(sessionId);
+        if (existing) {
+          existing.info.status = 'connected';
+          existing.info.lastSeen = new Date();
+        }
+      });
+
+      client.on('change_state', async (state) => {
+        if (isAborted()) return;
+        logger.info(`Session ${sessionId} state changed to ${state}`);
+        if (state === 'CONNECTED') {
+          clearSessionRestart(sessionId);
+          restartCounts.delete(sessionId); // Reset restart count on success
+        }
+
+        if (state === 'CONNECTED') {
+          await updateSessionRecord(sessionId, {
+            status: 'connected',
+            qrCode: null,
+            lastSeen: new Date()
+          });
+
+          const existing = sessions.get(sessionId);
+          if (existing) {
+            existing.info.status = 'connected';
+            existing.info.lastSeen = new Date();
+          }
+        }
+      });
+
+      client.on('auth_failure', async (msg) => {
+        if (isAborted()) return;
+        logger.error(`Session ${sessionId} authentication failed: ${msg}`);
+
+        await updateSessionRecord(sessionId, {
+          status: 'disconnected',
+          qrCode: null
+        });
+
+        await safeDestroyClient(sessionId, client);
+        scheduleSessionRestart(sessionId, 'auth_failure');
+      });
+
+      client.on('disconnected', async (reason) => {
+        if (isAborted()) return;
+        logger.info(`Session ${sessionId} disconnected: ${reason}`);
+
+        await updateSessionRecord(sessionId, {
+          status: 'disconnected',
+          qrCode: null
+        });
+
+        await safeDestroyClient(sessionId, client);
+        aborted = true;
+
+        // For LOGOUT/NAVIGATION, try to reconnect immediately using existing auth.
+        if (reason === 'LOGOUT' || reason === 'NAVIGATION') {
+          clearSessionRestart(sessionId);
+          try {
+            logger.info(`Re-initializing session ${sessionId} after ${reason} without clearing auth`);
+            await initializeSession(sessionId);
+          } catch (reinitError) {
+            logger.error(`Failed to re-initialize session ${sessionId} after ${reason}:`, reinitError);
+          }
+          return;
+        }
+
+        // Other reasons (e.g., transient) just log; no auto-restart timers.
+        scheduleSessionRestart(sessionId, `disconnected:${reason}`);
+      });
+
+      client.on('error', (error) => {
+        logger.error(`Client error for session ${sessionId}:`, error);
+        const message = String(error?.message || '');
+        if (message.includes('Execution context was destroyed')) {
+          scheduleSessionRestart(sessionId, 'execution context destroyed');
+        }
+      });
+
+      // Handle incoming messages and detect mentions in groups
+      client.on('message', async (msg) => {
+        try {
+          if (msg.from === 'status@broadcast' || msg.to === 'status@broadcast') {
+            logger.debug(`Skipping status message for session ${sessionId}`);
+            return;
+          }
+
+          let isMention = false;
+
+          if (msg.from.endsWith('@g.us')) {
+            const mentions = await msg.getMentions();
+            isMention = mentions.some((contact) => contact.isMe);
+          }
+
+          await processIncomingMessage(sessionId, msg, isMention);
+        } catch (error) {
+          logger.error(`Error processing message for session ${sessionId}:`, error);
+        }
+      });
+
+      client.on('message_create', async (msg) => {
+        try {
+          if (!msg.fromMe) {
+            return;
+          }
+
+          await processIncomingMessage(sessionId, msg, false);
+        } catch (error) {
+          logger.error(`Error processing outbound message for session ${sessionId}:`, error);
+        }
+      });
+
+      client.on('typing', (chat) => {
+        if (isAborted()) return;
+        try {
+          setTypingStatus(sessionId, chat?.id?._serialized, true);
+        } catch (error) {
+          logger.warn(`Failed to record typing state for session ${sessionId}:`, error);
+        }
+      });
+
+      client.on('stop_typing', (chat) => {
+        if (isAborted()) return;
+        try {
+          setTypingStatus(sessionId, chat?.id?._serialized, false);
+        } catch (error) {
+          logger.warn(`Failed to clear typing state for session ${sessionId}:`, error);
+        }
+      });
+
+      // Initialize the client
+      try {
+        await client.initialize();
+      } catch (initError) {
+        logger.error(`Client initialization failed for session ${sessionId}:`, initError);
+        await updateSessionRecord(sessionId, {
+          status: 'disconnected',
+          qrCode: null
+        });
+        await safeDestroyClient(sessionId, client);
+        scheduleSessionRestart(sessionId, 'initialize failure');
+        throw initError;
+      }
+
+      // Store session in map
+      if (!isAborted()) {
+        sessions.set(sessionId, {
+          client,
+          info: {
+            id: sessionId,
+            name: session.sessionName,
+            status: session.status,
+            qrCode: null
+          }
+        });
+      } else {
+        return null;
+      }
+
+      return sessions.get(sessionId);
+    } catch (error) {
+      logger.error(`Error initializing session ${sessionId}:`, error);
+
       await updateSessionRecord(sessionId, {
         status: 'disconnected',
         qrCode: null
       });
-      
-      // Remove session from map
-      sessions.delete(sessionId);
-      typingStatus.delete(sessionId);
-    });
 
-    client.on('disconnected', async (reason) => {
-      logger.info(`Session ${sessionId} disconnected: ${reason}`);
-      
-      await updateSessionRecord(sessionId, {
-        status: 'disconnected',
-        qrCode: null
-      });
-      
-      // Remove session from map
-      sessions.delete(sessionId);
-      typingStatus.delete(sessionId);
-    });
-
-    // Handle incoming messages and detect mentions in groups
-    client.on('message', async (msg) => {
-      try {
-        if (msg.from === 'status@broadcast' || msg.to === 'status@broadcast') {
-          logger.debug(`Skipping status message for session ${sessionId}`);
-          return;
-        }
-
-        let isMention = false;
-
-        if (msg.from.endsWith('@g.us')) {
-          const mentions = await msg.getMentions();
-          isMention = mentions.some((contact) => contact.isMe);
-        }
-
-        await processIncomingMessage(sessionId, msg, isMention);
-      } catch (error) {
-        logger.error(`Error processing message for session ${sessionId}:`, error);
+      const runtime = sessions.get(sessionId);
+      if (runtime?.client) {
+        await safeDestroyClient(sessionId, runtime.client);
       }
-    });
 
-    client.on('message_create', async (msg) => {
-      try {
-        if (!msg.fromMe) {
-          return;
-        }
+      scheduleSessionRestart(sessionId, 'initialize exception');
 
-        await processIncomingMessage(sessionId, msg, false);
-      } catch (error) {
-        logger.error(`Error processing outbound message for session ${sessionId}:`, error);
-      }
-    });
-
-    client.on('typing', (chat) => {
-      try {
-        setTypingStatus(sessionId, chat?.id?._serialized, true);
-      } catch (error) {
-        logger.warn(`Failed to record typing state for session ${sessionId}:`, error);
-      }
-    });
-
-    client.on('stop_typing', (chat) => {
-      try {
-        setTypingStatus(sessionId, chat?.id?._serialized, false);
-      } catch (error) {
-        logger.warn(`Failed to clear typing state for session ${sessionId}:`, error);
-      }
-    });
-
-    // Initialize the client
-    await client.initialize();
-
-    // Store session in map
-    sessions.set(sessionId, {
-      client,
-      info: {
-        id: sessionId,
-        name: session.sessionName,
-        status: session.status,
-        qrCode: null
-      }
-    });
-
-    return sessions.get(sessionId);
-  } catch (error) {
-    logger.error(`Error initializing session ${sessionId}:`, error);
-    
-    await updateSessionRecord(sessionId, {
-      status: 'disconnected',
-      qrCode: null
-    });
-    
-    const runtime = sessions.get(sessionId);
-    if (runtime?.client) {
-      await safeDestroyClient(sessionId, runtime.client);
+      throw error;
+    } finally {
+      initializingSessions.delete(sessionId);
     }
-    
-    throw error;
-  }
+  })();
+
+  initializingSessions.set(sessionId, initPromise);
+  return initPromise;
 }
 
 async function restartSession(sessionId) {
@@ -457,6 +607,8 @@ function getAllSessions() {
  */
 async function closeSession(sessionId) {
   try {
+    clearSessionRestart(sessionId);
+
     const session = sessions.get(sessionId);
     if (!session) {
       logger.warn(`Session ${sessionId} not found in memory; marking as disconnected`);
@@ -480,11 +632,11 @@ async function closeSession(sessionId) {
 
     // Logout and close the client
     await session.client.destroy();
-    
+
     // Remove session from map
     sessions.delete(sessionId);
     typingStatus.delete(sessionId);
-    
+
     // Update session status in database
     await prisma.session.update({
       where: { id: sessionId },
@@ -493,16 +645,16 @@ async function closeSession(sessionId) {
         qrCode: null
       }
     });
-    
+
     logger.info(`Session ${sessionId} closed successfully`);
     return true;
   } catch (error) {
     logger.error(`Error closing session ${sessionId}:`, error);
-    
+
     // Force remove session from map
     sessions.delete(sessionId);
     typingStatus.delete(sessionId);
-    
+
     // Update session status in database
     await prisma.session.update({
       where: { id: sessionId },
@@ -511,7 +663,7 @@ async function closeSession(sessionId) {
         qrCode: null
       }
     });
-    
+
     throw error;
   }
 }

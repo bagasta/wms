@@ -1,8 +1,6 @@
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../utils/prisma');
 const logger = require('../utils/logger');
 const { sendMessage } = require('../services/messageHandler');
-
-const prisma = new PrismaClient();
 
 /**
  * Handle incoming webhook
@@ -39,7 +37,7 @@ async function handleWebhook(req, res, next) {
     if (reply_to && reply_message) {
       try {
         const sentMessage = await sendMessage(parseInt(sessionId), reply_to, reply_message);
-        
+
         return res.status(200).json({
           status: 'success',
           data: {

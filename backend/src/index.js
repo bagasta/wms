@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('./utils/prisma');
 const logger = require('./utils/logger');
 const sessionRoutes = require('./routes/session.routes');
 const messageRoutes = require('./routes/message.routes');
@@ -15,12 +15,6 @@ dotenv.config();
 // Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 3001;
-
-// Initialize Prisma client
-const prisma = new PrismaClient();
-
-// Avoid MaxListenersExceededWarning when pm2/nodemon hot reloads
-EventEmitter.defaultMaxListeners = Math.max(EventEmitter.defaultMaxListeners || 10, 50);
 
 // Middleware
 app.use(cors());
@@ -47,7 +41,7 @@ app.use('/api/webhook', webhookRoutes);
 app.use((err, req, res, next) => {
   logger.error(`Error: ${err.message}`);
   logger.error(err.stack);
-  
+
   res.status(err.statusCode || 500).json({
     status: 'error',
     message: err.message || 'Internal Server Error',
@@ -57,7 +51,7 @@ app.use((err, req, res, next) => {
 // Start the server
 const server = app.listen(PORT, '0.0.0.0', async () => {
   logger.info(`Server running on port ${PORT}`);
-  
+
   try {
     // Initialize WhatsApp session manager
     await initializeSessionManager();
@@ -72,6 +66,11 @@ process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled promise rejection:', reason);
 });
 
+// Catch unexpected exceptions to avoid process crash
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception:', error);
+});
+
 // Handle graceful shutdown (guard against duplicate registrations)
 const SHUTDOWN_FLAG = Symbol.for('wms_shutdown_handler_registered');
 if (!process[SHUTDOWN_FLAG]) {
@@ -79,10 +78,10 @@ if (!process[SHUTDOWN_FLAG]) {
 
   const shutdown = async (signal) => {
     logger.info(`${signal} received, shutting down gracefully`);
-    
+
     server.close(async () => {
       logger.info('HTTP server closed');
-      
+
       try {
         await prisma.$disconnect();
         logger.info('Database connection closed');

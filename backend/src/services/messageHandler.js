@@ -1,14 +1,14 @@
-const { PrismaClient } = require('@prisma/client');
 const axios = require('axios');
+const http = require('http');
+const https = require('https');
 const sharp = require('sharp');
 const fs = require('fs');
 const path = require('path');
 const { MessageMedia } = require('whatsapp-web.js');
 const logger = require('../utils/logger');
-
-const prisma = new PrismaClient();
+const prisma = require('../utils/prisma');
 const DEFAULT_TYPING_DURATION_MS = 1200;
-const FALLBACK_WEBHOOK_TIMEOUT_MS = null;
+const FALLBACK_WEBHOOK_TIMEOUT_MS = 30000;
 const WEBHOOK_TIMEOUT_MS = resolveWebhookTimeout(
   process.env.WEBHOOK_TIMEOUT_MS,
   FALLBACK_WEBHOOK_TIMEOUT_MS
@@ -17,7 +17,43 @@ const WEBHOOK_SLOW_RESPONSE_MS = resolveSlowResponseThreshold(
   process.env.WEBHOOK_SLOW_RESPONSE_MS,
   WEBHOOK_TIMEOUT_MS
 );
+const webhookHttpClient = axios.create({
+  timeout: WEBHOOK_TIMEOUT_MS !== null ? WEBHOOK_TIMEOUT_MS : undefined,
+  httpAgent: new http.Agent({ keepAlive: true, maxSockets: 100 }),
+  httpsAgent: new https.Agent({
+    keepAlive: true,
+    maxSockets: 100,
+    rejectUnauthorized: process.env.WEBHOOK_REJECT_UNAUTHORIZED !== 'false'
+  }),
+  maxBodyLength: Infinity,
+  maxContentLength: Infinity
+});
 const sendQueues = new Map(); // sessionId -> Promise chain for outbound sends
+
+async function getOrInitRuntimeSession(sessionId) {
+  const { getSession, initializeSession } = require('./sessionManager');
+
+  let session = getSession(sessionId);
+  if (session) {
+    return session;
+  }
+
+  const sessionRecord = await prisma.session.findUnique({
+    where: { id: sessionId },
+    select: { status: true }
+  });
+
+  if (sessionRecord?.status === 'connected') {
+    try {
+      await initializeSession(sessionId);
+      session = getSession(sessionId);
+    } catch (error) {
+      logger.warn(`Unable to rehydrate runtime session ${sessionId} that is marked connected:`, error);
+    }
+  }
+
+  return session || null;
+}
 
 function isContactMethodsMissing(error) {
   const message = error?.message || '';
@@ -162,7 +198,7 @@ async function processIncomingMessage(sessionId, msg, isMention = false) {
         logger.warn(`Unable to load contact info for incoming message ${msg.id.id}:`, error);
       }
     }
-    
+
     // Prepare message data
     const chatId = chat && chat.isGroup ? chat.id._serialized : null;
     const chatName = resolveChatDisplayName(chat, contact);
@@ -404,10 +440,16 @@ async function sendToWebhook(session, message, media = null) {
 
     // Send to session webhook if configured
     const webhookTargets = buildWebhookTargets(session);
-
-    for (const target of webhookTargets) {
-      await dispatchWebhookTarget(target, payload, message, session.id);
+    if (webhookTargets.length === 0) {
+      logger.debug(`Session ${session.id} has no active webhook targets; skipping dispatch`);
+      return;
     }
+
+    await Promise.allSettled(
+      webhookTargets.map((target) =>
+        dispatchWebhookTarget(target, payload, message, session.id)
+      )
+    );
   } catch (error) {
     logger.error(`Error sending webhook for message ${message.id}:`, error);
   }
@@ -430,8 +472,7 @@ async function sendMessage(sessionId, to, content, options = {}) {
 
 async function executeSendMessage(sessionId, to, content, options = {}) {
   try {
-    const { getSession } = require('./sessionManager');
-    const session = getSession(sessionId);
+    const session = await getOrInitRuntimeSession(sessionId);
 
     if (!session) {
       throw new Error(`Session ${sessionId} not found or not connected`);
@@ -861,16 +902,18 @@ async function dispatchWebhookTarget(target, payload, message, sessionId) {
   logger.info(`Sending webhook for message ${message.id} to ${target.url}`);
 
   const slowTimer = startSlowResponseTimer(target.url);
+  const startedAt = Date.now();
 
   try {
-    const response = await axios.post(
+    const response = await webhookHttpClient.post(
       target.url,
       payload,
       buildWebhookRequestConfig(target.headers)
     );
 
+    const durationMs = Date.now() - startedAt;
     logger.info(
-      `Webhook sent for message ${message.id} to ${target.url}, status: ${response.status}`
+      `Webhook sent for message ${message.id} to ${target.url}, status: ${response.status}, duration: ${durationMs}ms`
     );
 
     await markMessageWebhookSent(message);
@@ -889,6 +932,15 @@ async function dispatchWebhookTarget(target, payload, message, sessionId) {
 
 async function handleWebhookReplies(responseData, message, sessionId) {
   if (!responseData) {
+    return;
+  }
+
+  // Ensure the session is alive before trying to auto-reply
+  const runtimeSession = await getOrInitRuntimeSession(sessionId);
+  if (!runtimeSession) {
+    logger.warn(
+      `Skipping auto-replies for message ${message.id} because session ${sessionId} is not connected`
+    );
     return;
   }
 

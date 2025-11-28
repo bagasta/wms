@@ -1,4 +1,4 @@
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../utils/prisma');
 const logger = require('../utils/logger');
 const {
   initializeSession,
@@ -10,8 +10,6 @@ const {
   restartSession,
   removeSessionAuthData
 } = require('../services/sessionManager');
-
-const prisma = new PrismaClient();
 const STALE_QR_THRESHOLD_MS = 2 * 60 * 1000;
 const FALLBACK_CHAT_HISTORY_LIMIT = 500;
 
@@ -133,7 +131,7 @@ async function getAllSessions(req, res, next) {
 async function getSessionById(req, res, next) {
   try {
     const { id } = req.params;
-    
+
     const session = await prisma.session.findUnique({
       where: { id: parseInt(id) },
       select: {
@@ -517,22 +515,7 @@ async function getSessionQR(req, res, next) {
 
     if (!qrCode) {
       logger.debug(`QR request for session ${sessionId} returned empty QR (status=${statusValue})`);
-
-      // If status shows connected but QR is missing, treat it as needing a fresh auth
-      if (statusValue === 'connected') {
-        logger.info(`Restarting session ${sessionId} because QR is empty while status is connected`);
-        try {
-          await restartSession(sessionId);
-          statusValue = 'connecting';
-          qrCode = null;
-        } catch (restartError) {
-          logger.error(`Failed to restart session ${sessionId} for QR recovery:`, restartError);
-          return res.status(500).json({
-            status: 'error',
-            message: 'Failed to refresh QR code. Please try again.'
-          });
-        }
-      }
+      // Do not restart if status already connected; just return the current state.
     }
 
     res.status(200).json({
