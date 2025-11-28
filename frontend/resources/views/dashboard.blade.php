@@ -1689,5 +1689,18 @@
                 location.reload();
             }
         }, 30000);
+        // Auto-refresh dashboard list every 5 seconds
+        setInterval(() => {
+            // Only refresh if no modals are open
+            const isChatOpen = !document.getElementById('chatModal').classList.contains('hidden');
+            const isQrOpen = !document.getElementById('qrModal').classList.contains('hidden');
+            const isCreateOpen = !document.getElementById('createModal').classList.contains('hidden');
+            const isEditOpen = !document.getElementById('editModal').classList.contains('hidden');
+            const isGroupPickerOpen = !document.getElementById('groupPickerModal').classList.contains('hidden');
+
+            if (!isChatOpen && !isQrOpen && !isCreateOpen && !isEditOpen && !isGroupPickerOpen) {
+                location.reload();
+            }
+        }, 10000);
     </script>
 </x-app-layout>

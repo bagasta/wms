@@ -110,6 +110,30 @@ function resolveChatDisplayName(chat, contact) {
  */
 async function processIncomingMessage(sessionId, msg, isMention = false) {
   try {
+    // Self-healing: If we are receiving messages, the session is definitely connected.
+    // Ensure the database reflects this status.
+    (async () => {
+      try {
+        const sessionStatusCheck = await prisma.session.findUnique({
+          where: { id: sessionId },
+          select: { status: true }
+        });
+
+        if (sessionStatusCheck && sessionStatusCheck.status !== 'connected') {
+          logger.info(`Session ${sessionId} is active (receiving messages) but status was '${sessionStatusCheck.status}'. Updating to 'connected'.`);
+          await prisma.session.update({
+            where: { id: sessionId },
+            data: {
+              status: 'connected',
+              qrCode: null,
+              lastSeen: new Date()
+            }
+          });
+        }
+      } catch (err) {
+        logger.warn(`Failed to auto-heal session status for ${sessionId}:`, err);
+      }
+    })();
     // Ignore status/story updates
     if (msg.from === 'status@broadcast' || msg.to === 'status@broadcast') {
       logger.debug(`Skipping status message for session ${sessionId}`);
@@ -469,6 +493,7 @@ async function sendMessage(sessionId, to, content, options = {}) {
     executeSendMessage(sessionId, to, content, options)
   );
 }
+
 
 async function executeSendMessage(sessionId, to, content, options = {}) {
   try {

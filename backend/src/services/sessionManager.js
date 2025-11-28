@@ -294,6 +294,45 @@ async function initializeSession(sessionId) {
       }
 
       // Set up event handlers
+      client.on('loading_screen', (percent, message) => {
+        logger.debug(`Session ${sessionId} loading: ${percent}% - ${message}`);
+        console.log(`[${sessionId}] Loading: ${percent}%`);
+      });
+
+      // Periodic state check to ensure we catch the connection even if events are missed
+      const stateCheckInterval = setInterval(async () => {
+        if (isAborted()) {
+          clearInterval(stateCheckInterval);
+          return;
+        }
+        try {
+          // Only check if we are not already marked as connected in memory
+          const currentSession = sessions.get(sessionId);
+          if (currentSession && currentSession.info.status === 'connected') {
+            return;
+          }
+
+          const state = await client.getState();
+          logger.debug(`Session ${sessionId} periodic state check: ${state}`);
+
+          if (state === 'CONNECTED') {
+            logger.info(`Session ${sessionId} found CONNECTED via periodic check. Updating DB.`);
+            console.log(`[${sessionId}] Found CONNECTED via periodic check`);
+
+            clearSessionRestart(sessionId);
+            restartCounts.delete(sessionId);
+
+            await updateSessionRecord(sessionId, {
+              status: 'connected',
+              qrCode: null,
+              lastSeen: new Date()
+            });
+          }
+        } catch (err) {
+          // Ignore errors during initialization (client might not be ready)
+        }
+      }, 5000);
+
       client.on('qr', async (qr) => {
         if (isAborted()) return;
 
@@ -339,6 +378,8 @@ async function initializeSession(sessionId) {
       client.on('ready', async () => {
         if (isAborted()) return;
         logger.info(`Session ${sessionId} is ready`);
+        console.log(`[${sessionId}] Session is READY`);
+
         clearSessionRestart(sessionId);
         restartCounts.delete(sessionId); // Reset restart count on success
         await updateSessionRecord(sessionId, {
@@ -357,6 +398,8 @@ async function initializeSession(sessionId) {
       client.on('authenticated', async () => {
         if (isAborted()) return;
         logger.info(`Session ${sessionId} authenticated`);
+        console.log(`[${sessionId}] Session AUTHENTICATED`);
+
         clearSessionRestart(sessionId);
         restartCounts.delete(sessionId); // Reset restart count on success
 
