@@ -313,10 +313,10 @@ async function initializeSession(sessionId) {
           }
 
           const state = await client.getState();
-          logger.debug(`Session ${sessionId} periodic state check: ${state}`);
+          logger.debug(`Session ${sessionId} periodic state check: ${state}, client.info: ${client.info ? 'present' : 'missing'}`);
 
-          if (state === 'CONNECTED') {
-            logger.info(`Session ${sessionId} found CONNECTED via periodic check. Updating DB.`);
+          if (state === 'CONNECTED' || (client.info && client.info.wid)) {
+            logger.info(`Session ${sessionId} found CONNECTED via periodic check (State: ${state}, Info: ${Boolean(client.info)}). Updating DB.`);
             console.log(`[${sessionId}] Found CONNECTED via periodic check`);
 
             clearSessionRestart(sessionId);
@@ -497,10 +497,80 @@ async function initializeSession(sessionId) {
           }
 
           let isMention = false;
+          const myId = client.info?.wid?._serialized;
+          // Attempt to get LID if available (it might be in client.info.wid.lid or we might need to look elsewhere)
+          let myLid = client.info?.wid?.lid?._serialized || client.info?.wid?.lid || client.info?.me?.lid?._serialized || client.info?.me?.lid;
+          const myDigits = myId ? myId.replace(/\D/g, '') : null;
 
           if (msg.from.endsWith('@g.us')) {
-            const mentions = await msg.getMentions();
-            isMention = mentions.some((contact) => contact.isMe);
+            // Check mentions without calling getMentions() to avoid crash
+            // msg.mentionedIds is an array of serialized IDs (strings)
+            if (msg.mentionedIds && Array.isArray(msg.mentionedIds) && msg.mentionedIds.length > 0) {
+              // 1. Check direct ID match (Phone Number ID)
+              if (myId && msg.mentionedIds.includes(myId)) {
+                isMention = true;
+              }
+              // 2. Check direct LID match (if we know our LID)
+              else if (myLid && msg.mentionedIds.includes(myLid)) {
+                isMention = true;
+              }
+              // 3. Fallback: Resolve mentioned IDs to check if they are "me"
+              else {
+                for (const mentionedId of msg.mentionedIds) {
+                  try {
+                    const contact = await client.getContactById(mentionedId);
+                    if (contact && contact.isMe) {
+                      isMention = true;
+                      // Cache the found LID for this session to avoid future lookups
+                      if (mentionedId.endsWith('@lid')) {
+                        myLid = mentionedId;
+                        if (client.info && client.info.wid) {
+                          client.info.wid.lid = { _serialized: myLid };
+                        }
+                      }
+                      break;
+                    }
+                  } catch (err) {
+                    // Ignore lookup errors
+                  }
+                }
+
+                // 4. Fallback: Map LID -> phone number and compare to our digits
+                if (!isMention && myDigits) {
+                  try {
+                    const mappings = await client.getContactLidAndPhone(msg.mentionedIds);
+                    for (const mapping of mappings || []) {
+                      if (!mapping) continue;
+                      const pnDigits = mapping.pn ? mapping.pn.replace(/\D/g, '') : null;
+                      if (pnDigits && pnDigits === myDigits) {
+                        isMention = true;
+                        if (!myLid && mapping.lid) {
+                          myLid = mapping.lid;
+                          if (client.info && client.info.wid) {
+                            client.info.wid.lid = { _serialized: myLid };
+                          }
+                        }
+                        break;
+                      }
+                      if (myLid && mapping.lid && mapping.lid === myLid) {
+                        isMention = true;
+                        break;
+                      }
+                    }
+                  } catch (err) {
+                    logger.debug(`Failed to resolve mention LID mapping for session ${sessionId}: ${err.message || err}`);
+                  }
+                }
+              }
+            }
+
+            logger.debug(`Group message check: from=${msg.from}, myId=${myId}, myLid=${myLid}, mentionedIds=${JSON.stringify(msg.mentionedIds)}, isMention=${isMention}`);
+
+            // If it is a group message and the bot is NOT mentioned, ignore it completely
+            if (!isMention) {
+              // logger.debug(`Ignoring group message from ${msg.from} because bot was not mentioned`);
+              return;
+            }
           }
 
           await processIncomingMessage(sessionId, msg, isMention);
@@ -557,6 +627,10 @@ async function initializeSession(sessionId) {
       if (!isAborted()) {
         sessions.set(sessionId, {
           client,
+          cleanup: () => {
+            aborted = true;
+            clearInterval(stateCheckInterval);
+          },
           info: {
             id: sessionId,
             name: session.sessionName,
@@ -599,6 +673,10 @@ async function restartSession(sessionId) {
     const existingSession = sessions.get(sessionId);
 
     if (existingSession) {
+      if (typeof existingSession.cleanup === 'function') {
+        existingSession.cleanup();
+      }
+
       try {
         await existingSession.client.destroy();
       } catch (error) {
@@ -671,6 +749,11 @@ async function closeSession(sessionId) {
       }
 
       return false;
+    }
+
+    // Cleanup background tasks
+    if (typeof session.cleanup === 'function') {
+      session.cleanup();
     }
 
     // Logout and close the client

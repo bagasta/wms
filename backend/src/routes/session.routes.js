@@ -80,4 +80,11 @@ router.get('/:id/groups', sessionController.getSessionGroups);
  */
 router.get('/:id/groups/:groupId/members', sessionController.getGroupMembers);
 
+/**
+ * @route   GET /api/sessions/:id/analytics
+ * @desc    Get analytics for a session
+ * @access  Public
+ */
+router.get('/:id/analytics', sessionController.getSessionAnalytics);
+
 module.exports = router;

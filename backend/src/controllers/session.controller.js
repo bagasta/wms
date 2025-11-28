@@ -295,13 +295,20 @@ async function deleteSession(req, res, next) {
 
     // Close session if it's active
     if (existingSession.status === 'connected' || existingSession.status === 'connecting') {
-      await closeSession(parseInt(id));
+      try {
+        await closeSession(parseInt(id));
+      } catch (closeError) {
+        logger.warn(`Failed to close session ${id} gracefully during delete:`, closeError);
+      }
     }
 
     // Delete session from database
     await prisma.session.delete({
       where: { id: parseInt(id) }
     });
+
+    // Wait a bit for file locks to release
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     try {
       await removeSessionAuthData(sessionId);
@@ -333,6 +340,7 @@ async function deleteSession(req, res, next) {
 async function startSession(req, res, next) {
   try {
     const { id } = req.params;
+    logger.info(`Request to start session ${id}`);
 
     // Check if session exists
     const existingSession = await prisma.session.findUnique({
@@ -708,6 +716,111 @@ async function getGroupMembersHandler(req, res, next) {
   }
 }
 
+/**
+ * Get session analytics
+ * @param {object} req - Express request object
+ * @param {object} res - Express response object
+ * @param {function} next - Express next middleware function
+ */
+async function getSessionAnalytics(req, res, next) {
+  try {
+    const { id } = req.params;
+    const sessionId = parseInt(id, 10);
+
+    if (Number.isNaN(sessionId)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid session ID'
+      });
+    }
+
+    // 1. Total Incoming Messages (People chatting with the bot)
+    const totalIncomingMessages = await prisma.message.count({
+      where: {
+        sessionId: sessionId,
+        fromMe: false
+      }
+    });
+
+    // 2. Unique Users (Distinct 'fromNumber' in incoming messages)
+    const uniqueUsers = await prisma.message.groupBy({
+      by: ['fromNumber'],
+      where: {
+        sessionId: sessionId,
+        fromMe: false
+      }
+    });
+    const totalUniqueUsers = uniqueUsers.length;
+
+    // 3. Messages Today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const messagesToday = await prisma.message.count({
+      where: {
+        sessionId: sessionId,
+        fromMe: false,
+        timestamp: {
+          gte: today
+        }
+      }
+    });
+
+    // 4. Messages Last 7 Days (for chart)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    const messagesLast7Days = await prisma.message.groupBy({
+      by: ['timestamp'],
+      where: {
+        sessionId: sessionId,
+        fromMe: false,
+        timestamp: {
+          gte: sevenDaysAgo
+        }
+      },
+      _count: {
+        id: true
+      }
+    });
+
+    // Format for chart: { date: 'YYYY-MM-DD', count: 10 }
+    const chartData = {};
+    // Initialize last 7 days with 0
+    for (let i = 0; i < 7; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      chartData[dateStr] = 0;
+    }
+
+    messagesLast7Days.forEach(item => {
+      const dateStr = new Date(item.timestamp).toISOString().split('T')[0];
+      if (chartData[dateStr] !== undefined) {
+        chartData[dateStr] += item._count.id;
+      }
+    });
+
+    const formattedChartData = Object.entries(chartData)
+      .map(([date, count]) => ({ date, count }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        total_incoming: totalIncomingMessages,
+        unique_users: totalUniqueUsers,
+        messages_today: messagesToday,
+        chart_data: formattedChartData
+      }
+    });
+
+  } catch (error) {
+    logger.error(`Error getting analytics for session ${req.params.id}:`, error);
+    next(error);
+  }
+}
+
 module.exports = {
   getAllSessions,
   getSessionById,
@@ -719,5 +832,6 @@ module.exports = {
   getSessionQR,
   getSessionChats: getSessionChatsHandler,
   getSessionGroups: getSessionGroupsHandler,
-  getGroupMembers: getGroupMembersHandler
+  getGroupMembers: getGroupMembersHandler,
+  getSessionAnalytics
 };

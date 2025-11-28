@@ -157,6 +157,8 @@ async function processIncomingMessage(sessionId, msg, isMention = false) {
     const shouldSendWebhook =
       hasWebhook && !isOutboundMessage && (!isGroupMessage || isMention);
 
+    logger.info(`Processing message ${msg.id.id} for session ${sessionId}. Webhook: ${hasWebhook}, Outbound: ${isOutboundMessage}, Group: ${isGroupMessage}, Mention: ${isMention}, ShouldSend: ${shouldSendWebhook}`);
+
     if (!hasWebhook) {
       logger.debug(
         `Session ${sessionId} has no webhook configured, storing message without webhook dispatch`
@@ -169,6 +171,8 @@ async function processIncomingMessage(sessionId, msg, isMention = false) {
       logger.debug(
         `Group message captured for session ${sessionId} without mention; webhook dispatch skipped`
       );
+    } else if (!shouldSendWebhook) {
+      logger.warn(`Message ${msg.id.id} skipped webhook for unknown reason. Flags: Webhook=${hasWebhook}, Outbound=${isOutboundMessage}, Group=${isGroupMessage}, Mention=${isMention}`);
     }
 
     const existingMessage = await prisma.message.findUnique({

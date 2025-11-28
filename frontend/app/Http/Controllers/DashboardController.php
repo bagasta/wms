@@ -48,10 +48,17 @@ class DashboardController extends Controller
                 'user_id' => Auth::id(),
             ]);
 
+            if (!$response->successful()) {
+                $errorMsg = $response->json('message') ?? 'Backend returned ' . $response->status();
+                throw new \Exception($errorMsg);
+            }
+
             // Backend session is created but not started automatically.
         } catch (\Exception $e) {
-            // Log error but don't fail the creation
+            // Log error and rollback
             logger()->error('Failed to create session in backend: ' . $e->getMessage());
+            $session->delete();
+            return redirect()->route('dashboard')->with('error', 'Failed to create session in backend: ' . $e->getMessage());
         }
 
         return redirect()->route('dashboard')->with('success', 'Session created successfully!');
@@ -126,6 +133,10 @@ class DashboardController extends Controller
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
+                
+                return response()->json([
+                    'error' => $response->json('message') ?? 'Failed to fetch QR code from backend',
+                ], $response->status());
             }
         } catch (\Exception $e) {
             logger()->error('Failed to get QR code: ' . $e->getMessage());
@@ -164,6 +175,10 @@ class DashboardController extends Controller
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
+
+                return response()->json([
+                    'error' => $response->json('message') ?? 'Failed to start session from backend',
+                ], $response->status());
             }
         } catch (\Exception $e) {
             logger()->error('Failed to start session: ' . $e->getMessage());

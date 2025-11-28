@@ -15,6 +15,45 @@
 
     <div class="py-8 md:py-12 bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 min-h-screen">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <!-- Analytics Summary -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div class="bg-gray-800/80 backdrop-blur-sm p-6 rounded-2xl border border-gray-700/50 shadow-xl">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-gray-400 text-sm font-medium uppercase tracking-wider">Total Sessions</h3>
+                        <div class="bg-blue-500/20 p-2 rounded-lg">
+                            <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                            </svg>
+                        </div>
+                    </div>
+                    <p class="text-3xl font-bold text-white">{{ $sessions->count() }}</p>
+                </div>
+                <div class="bg-gray-800/80 backdrop-blur-sm p-6 rounded-2xl border border-gray-700/50 shadow-xl">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-gray-400 text-sm font-medium uppercase tracking-wider">Active Sessions</h3>
+                        <div class="bg-green-500/20 p-2 rounded-lg">
+                            <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                        </div>
+                    </div>
+                    <p class="text-3xl font-bold text-white">{{ $sessions->where('status', 'connected')->count() }}</p>
+                </div>
+                <div class="bg-gray-800/80 backdrop-blur-sm p-6 rounded-2xl border border-gray-700/50 shadow-xl">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-gray-400 text-sm font-medium uppercase tracking-wider">System Status</h3>
+                        <div class="bg-purple-500/20 p-2 rounded-lg">
+                            <svg class="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                            </svg>
+                        </div>
+                    </div>
+                    <p class="text-xl font-bold text-green-400 flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+                        Operational
+                    </p>
+                </div>
+            </div>
             <!-- Success/Error Messages -->
             @if(session('success'))
                 <div class="bg-green-600/20 border border-green-600/50 text-green-400 p-4 rounded-xl mb-6 backdrop-blur-sm flex items-center gap-3">
@@ -116,6 +155,13 @@
                                                             Stop
                                                         </button>
                                                     @else
+                                                        <button onclick="showAnalytics({{ $session->id }})"
+                                                                class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 hover:shadow-lg flex items-center gap-2">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                                            </svg>
+                                                            Detail
+                                                        </button>
                                                         <button onclick="stopSession({{ $session->id }})"
                                                                 class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 hover:scale-105 hover:shadow-lg flex items-center gap-2">
                                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -478,6 +524,62 @@
                     </div>
                     <div id="chatMessagesContainer" class="hidden flex-1 overflow-y-auto px-3 md:px-6 py-6 space-y-3 custom-scrollbar bg-gray-900/40">
                         <!-- Messages rendered dynamically -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Analytics Modal -->
+    <div id="analyticsModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm hidden items-center justify-center z-50 transition-opacity duration-300">
+        <div class="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-4xl p-6 md:p-8 transform transition-all duration-300 scale-95 opacity-0" id="analyticsModalContent">
+            <div class="flex justify-between items-center mb-8">
+                <h3 class="text-2xl font-bold text-white flex items-center gap-3">
+                    <span class="bg-indigo-500 w-10 h-10 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                        </svg>
+                    </span>
+                    Session Analytics
+                </h3>
+                <button onclick="closeAnalyticsModal()" class="text-gray-400 hover:text-white transition-colors p-2 hover:bg-gray-700 rounded-lg">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <div id="analyticsLoading" class="flex flex-col items-center justify-center py-12">
+                <svg class="animate-spin h-10 w-10 text-indigo-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span class="text-gray-400">Loading analytics data...</span>
+            </div>
+
+            <div id="analyticsContent" class="hidden">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <div class="bg-gray-700/50 p-6 rounded-xl border border-gray-600/50">
+                        <p class="text-sm text-gray-400 uppercase tracking-wider font-medium mb-2">Total Incoming</p>
+                        <p class="text-3xl font-bold text-white" id="statTotalIncoming">-</p>
+                    </div>
+                    <div class="bg-gray-700/50 p-6 rounded-xl border border-gray-600/50">
+                        <p class="text-sm text-gray-400 uppercase tracking-wider font-medium mb-2">Unique Users</p>
+                        <p class="text-3xl font-bold text-white" id="statUniqueUsers">-</p>
+                    </div>
+                    <div class="bg-gray-700/50 p-6 rounded-xl border border-gray-600/50">
+                        <p class="text-sm text-gray-400 uppercase tracking-wider font-medium mb-2">Messages Today</p>
+                        <p class="text-3xl font-bold text-white" id="statMessagesToday">-</p>
+                    </div>
+                </div>
+
+                <div class="bg-gray-700/50 p-6 rounded-xl border border-gray-600/50">
+                    <h4 class="text-lg font-semibold text-white mb-6">Incoming Messages (Last 7 Days)</h4>
+                    <div class="relative h-64 w-full">
+                        <!-- Simple CSS Bar Chart -->
+                        <div id="analyticsChart" class="flex items-end justify-between h-full w-full gap-2 px-2">
+                            <!-- Bars will be injected here -->
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1689,6 +1791,87 @@
                 location.reload();
             }
         }, 30000);
+        // Analytics Modal Functions
+        function showAnalytics(sessionId) {
+            const modal = document.getElementById('analyticsModal');
+            const content = document.getElementById('analyticsModalContent');
+            const loading = document.getElementById('analyticsLoading');
+            const dataContent = document.getElementById('analyticsContent');
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            // Animation
+            setTimeout(() => {
+                content.classList.remove('scale-95', 'opacity-0');
+                content.classList.add('scale-100', 'opacity-100');
+            }, 10);
+
+            // Reset state
+            loading.classList.remove('hidden');
+            dataContent.classList.add('hidden');
+
+            // Fetch data
+            fetch(`/sessions/${sessionId}/analytics`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('statTotalIncoming').innerText = data.data.total_incoming;
+                        document.getElementById('statUniqueUsers').innerText = data.data.unique_users;
+                        document.getElementById('statMessagesToday').innerText = data.data.messages_today;
+
+                        renderChart(data.data.chart_data);
+
+                        loading.classList.add('hidden');
+                        dataContent.classList.remove('hidden');
+                    } else {
+                        alert('Failed to load analytics data');
+                        closeAnalyticsModal();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Failed to load analytics data');
+                    closeAnalyticsModal();
+                });
+        }
+
+        function closeAnalyticsModal() {
+            const modal = document.getElementById('analyticsModal');
+            const content = document.getElementById('analyticsModalContent');
+
+            content.classList.remove('scale-100', 'opacity-100');
+            content.classList.add('scale-95', 'opacity-0');
+
+            setTimeout(() => {
+                modal.classList.remove('flex');
+                modal.classList.add('hidden');
+            }, 300);
+        }
+
+        function renderChart(data) {
+            const chartContainer = document.getElementById('analyticsChart');
+            chartContainer.innerHTML = '';
+
+            const maxCount = Math.max(...data.map(d => d.count), 1); // Avoid division by zero
+
+            data.forEach(item => {
+                const heightPercentage = (item.count / maxCount) * 100;
+                const barColor = item.count > 0 ? 'bg-indigo-500 hover:bg-indigo-400' : 'bg-gray-700';
+                
+                const barHtml = `
+                    <div class="flex flex-col items-center justify-end h-full flex-1 group relative">
+                        <div class="w-full ${barColor} rounded-t-lg transition-all duration-300 relative" style="height: ${heightPercentage}%">
+                             <div class="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap border border-gray-700 pointer-events-none z-10">
+                                ${item.count} msgs
+                            </div>
+                        </div>
+                        <div class="text-xs text-gray-400 mt-2 transform -rotate-45 origin-top-left translate-y-4 md:rotate-0 md:translate-y-0 md:origin-center">${item.date.slice(5)}</div>
+                    </div>
+                `;
+                chartContainer.innerHTML += barHtml;
+            });
+        }
+
         // Auto-refresh dashboard list every 5 seconds
         setInterval(() => {
             // Only refresh if no modals are open
@@ -1697,8 +1880,9 @@
             const isCreateOpen = !document.getElementById('createModal').classList.contains('hidden');
             const isEditOpen = !document.getElementById('editModal').classList.contains('hidden');
             const isGroupPickerOpen = !document.getElementById('groupPickerModal').classList.contains('hidden');
+            const isAnalyticsOpen = !document.getElementById('analyticsModal').classList.contains('hidden');
 
-            if (!isChatOpen && !isQrOpen && !isCreateOpen && !isEditOpen && !isGroupPickerOpen) {
+            if (!isChatOpen && !isQrOpen && !isCreateOpen && !isEditOpen && !isGroupPickerOpen && !isAnalyticsOpen) {
                 location.reload();
             }
         }, 10000);
