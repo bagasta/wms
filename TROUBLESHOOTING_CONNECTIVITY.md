@@ -42,6 +42,18 @@ If the system receives *any* incoming message for a session:
 ### 3. Dashboard Auto-Refresh (`dashboard.blade.php`)
 The frontend now automatically refreshes the session list every 10 seconds (provided no modals are open). This ensures that once the backend heals the status, the user sees it without manual intervention.
 
+## Issue 3: Group Mention Detection Failing
+**Symptoms:**
+- Bot ignores group messages even when it is explicitly mentioned, resulting in no webhook dispatch or automated reply.
+- Logs show the `mentionedIds` array containing entries like `165971075592216@lid` while the bot’s stored ID remains a `@c.us` value.
+
+**Root Cause:**
+WhatsApp now serializes mentions as LIDs. The previous guard in `sessionManager.js` only compared `mentionedIds` to the bot’s known `@c.us` or cached `@lid` IDs. Because a freshly started session lacks a cached LID, all mentions resolved to `false` and the message was dropped before reaching `messageHandler`.
+
+**Solution:**
+- Added a fallback that calls `client.getContactLidAndPhone()` for the mentioned IDs, then compares the returned phone digits to the bot’s own digits.
+- Once the mapping matches, `isMention` is set to `true`, the discovered LID is cached, and the message continues through the handler so webhooks/replies work even when WhatsApp uses LID addressing.
+
 ## Summary of Changes
 - **Backend:**
     - `src/utils/prisma.js`: Singleton database client.
@@ -49,6 +61,7 @@ The frontend now automatically refreshes the session list every 10 seconds (prov
     - `src/services/messageHandler.js`: Added logic to update status to "Connected" upon receiving any message.
 - **Frontend:**
     - `dashboard.blade.php`: Added auto-refresh logic and "Starting..." UI feedback.
+    - `src/services/sessionManager.js`: Added probabilistic mention detection so group mentions serialized as `@lid` still count for webhook/reply dispatch.
 
 ## How to Verify
 1.  **Scan QR Code:** Status should update to "Connected" within 5-10 seconds.
